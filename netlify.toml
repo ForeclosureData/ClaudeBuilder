@@ -15,6 +15,7 @@
 [build.environment]
   NODE_VERSION = "20"
   BILLING_PROVIDER = "mock"
+  NODE_OPTIONS = "--max-old-space-size=4096"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
