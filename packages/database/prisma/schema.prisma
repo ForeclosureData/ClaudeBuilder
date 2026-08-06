@@ -11,7 +11,11 @@
 
 generator client {
   provider      = "prisma-client-js"
-  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+  // Both x86_64 and arm64 Amazon Linux targets: Netlify Functions'
+  // underlying Lambda architecture isn't guaranteed, so build both and let
+  // Prisma auto-select the matching one for whichever process.arch it's
+  // actually running under, rather than guessing at deploy-config time.
+  binaryTargets = ["native", "rhel-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {
