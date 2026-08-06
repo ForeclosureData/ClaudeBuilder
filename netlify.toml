@@ -13,9 +13,12 @@
     export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
     export DIRECT_URL="$DATABASE_URL" && \
     if [ -n "$DATABASE_URL" ]; then \
-      pnpm --filter @foreclosuredata/database run db:push -- --accept-data-loss --skip-generate || true; \
+      pnpm --filter @foreclosuredata/database run db:push || true; \
       pnpm --filter @foreclosuredata/database run db:seed || true; \
     fi && \
+    echo "--- POST-DB-PUSH PRISMA CLIENT DIAGNOSTIC ---" && \
+    (grep -c appraisalPropertyCandidate node_modules/.prisma/client/index.d.ts || echo "MISSING in node_modules/.prisma/client/index.d.ts") && \
+    echo "--- END DIAGNOSTIC ---" && \
     pnpm --filter @foreclosuredata/web run build
   """
 
