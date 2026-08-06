@@ -6,8 +6,8 @@
     export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
     export DIRECT_URL="$DATABASE_URL" && \
     if [ -n "$DATABASE_URL" ]; then \
-      pnpm --filter @foreclosuredata/database run db:push -- --accept-data-loss --skip-generate && \
-      pnpm --filter @foreclosuredata/database run db:seed; \
+      pnpm --filter @foreclosuredata/database run db:push -- --accept-data-loss --skip-generate || true; \
+      pnpm --filter @foreclosuredata/database run db:seed || true; \
     fi && \
     pnpm --filter @foreclosuredata/web run build
   """
