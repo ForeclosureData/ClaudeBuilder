@@ -13,6 +13,9 @@ apps/mobile/dist/
 # Turborepo
 .turbo/
 
+# Netlify CLI local state
+.netlify/
+
 # Build output
 dist/
 build/
