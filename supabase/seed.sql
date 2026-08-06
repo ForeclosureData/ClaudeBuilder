@@ -1,0 +1,17 @@
+-- ForeclosureData — SQL seed placeholder.
+--
+-- The canonical, maintained seed script is packages/database/prisma/seed.ts
+-- (fictional demo data: plans, a demo Hidalgo County, and four sample
+-- foreclosure cases). It's TypeScript because it computes values (balance
+-- estimates, summaries) using the same @foreclosuredata/foreclosure-core
+-- logic the worker uses — duplicating that math in raw SQL would drift.
+--
+-- Run it with:
+--   pnpm --filter @foreclosuredata/database db:seed
+--
+-- This file exists to satisfy `supabase db reset`, which looks for
+-- supabase/seed.sql after applying supabase/migrations/*.sql. If you rely
+-- on the Supabase CLI workflow, run the command above afterward:
+--
+--   supabase db reset && pnpm --filter @foreclosuredata/database db:seed
+select 1; -- no-op; see packages/database/prisma/seed.ts

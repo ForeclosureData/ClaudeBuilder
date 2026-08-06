@@ -1,0 +1,28 @@
+{
+  "name": "foreclosuredata",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ForeclosureData — Texas foreclosure intelligence platform (monorepo)",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.7.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "dev:web": "turbo run dev --filter=@foreclosuredata/web",
+    "dev:mobile": "turbo run dev --filter=@foreclosuredata/mobile",
+    "dev:worker": "turbo run dev --filter=@foreclosuredata/worker",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:push": "pnpm --filter @foreclosuredata/database db:push",
+    "db:migrate": "pnpm --filter @foreclosuredata/database db:migrate",
+    "db:seed": "pnpm --filter @foreclosuredata/database db:seed",
+    "db:studio": "pnpm --filter @foreclosuredata/database db:studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.9",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,1061 @@
+// ForeclosureData — database schema
+//
+// This schema is Prisma's source of truth for every table in the `public`
+// schema. It intentionally does NOT model Supabase's `auth.users` table —
+// Prisma should never migrate that table. Two things are applied separately
+// against a real Supabase Postgres instance (see sql/rls.sql):
+//   1. `ALTER TABLE profiles ADD CONSTRAINT ... FOREIGN KEY (id) REFERENCES auth.users(id)`
+//   2. Row Level Security policies on every table.
+// Local dev (docker-compose Postgres) has no `auth` schema at all, so those
+// statements are skipped there — `Profile.id` is just a free-standing uuid.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  USER
+  ADMIN
+}
+
+/// FREE: browse-only preview, no county fully unlocked.
+/// COUNTY: full access to exactly one county (Subscription.selectedCountyId).
+/// UNLIMITED: full access to every Texas county.
+enum PlanKey {
+  FREE
+  COUNTY
+  UNLIMITED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  PAYMENT_FAILED
+  CANCELED
+  EXPIRED
+  PROMOTIONAL
+  INCOMPLETE
+  INACTIVE
+}
+
+/// Which payment processor actually owns a subscription/customer/transaction.
+/// The entitlement system never branches on this — see packages/auth/src/entitlement.ts.
+enum BillingProviderKind {
+  STRIPE
+  AUTHORIZE_NET
+  MOCK
+}
+
+enum BillingInterval {
+  MONTHLY
+  ANNUAL
+}
+
+/// Internal, provider-agnostic plan SKUs. Never hardcode a Stripe price ID
+/// or an Authorize.net ARB plan reference in application logic — look it
+/// up in PlanMapping by (internalPlanId, billingProvider) instead.
+enum InternalPlanId {
+  county_monthly
+  county_annual
+  texas_monthly
+  texas_annual
+}
+
+enum PaymentEventType {
+  CHARGE_SUCCEEDED
+  CHARGE_FAILED
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPDATED
+  SUBSCRIPTION_CANCELED
+  REFUND_ISSUED
+}
+
+enum DocumentType {
+  NOTICE_OF_TRUSTEE_SALE
+  AMENDED_NOTICE
+  CANCELLATION_NOTICE
+  POSTPONEMENT_NOTICE
+  DEED_OF_TRUST
+  ASSIGNMENT_OF_LIEN
+  OTHER
+  UNKNOWN
+}
+
+enum DocumentProcessingStatus {
+  DISCOVERED
+  DOWNLOADED
+  TEXT_EXTRACTED
+  DETERMINISTIC_EXTRACTED
+  AI_EXTRACTED
+  RESOLVED
+  SUMMARIZED
+  FAILED
+  DUPLICATE
+}
+
+enum ManualReviewStatus {
+  NOT_NEEDED
+  PENDING
+  IN_REVIEW
+  RESOLVED
+}
+
+enum SaleStatus {
+  SCHEDULED
+  POSTPONED
+  CANCELED
+  SOLD
+  UNKNOWN
+}
+
+enum CancellationStatus {
+  NOT_CANCELED
+  CANCELED
+  WITHDRAWN
+  UNKNOWN
+}
+
+enum PartyEntityType {
+  INDIVIDUAL
+  ENTITY
+  UNKNOWN
+}
+
+enum PropertyType {
+  SINGLE_FAMILY
+  MULTI_FAMILY
+  CONDO
+  TOWNHOUSE
+  MOBILE_HOME
+  VACANT_LAND
+  COMMERCIAL
+  OTHER
+  UNKNOWN
+}
+
+enum PropertyClassification {
+  RESIDENTIAL
+  COMMERCIAL
+  UNKNOWN
+}
+
+enum AddressResolutionMethod {
+  EXPLICIT_STATED
+  COMMONLY_KNOWN_AS_PHRASE
+  LEGAL_DESCRIPTION_MATCH
+  PROPERTY_ID_MATCH
+  OWNER_MAILING_ADDRESS_MATCH
+  GEOCODING
+  MANUAL
+  UNRESOLVED
+}
+
+enum FieldSourceType {
+  FORECLOSURE_NOTICE
+  COUNTY_CLERK
+  APPRAISAL_DISTRICT
+  GEOCODING_SERVICE
+  THIRD_PARTY_DATA
+  CALCULATED
+  MANUAL
+}
+
+enum ManualReviewReason {
+  NO_ADDRESS_RESOLVED
+  MULTIPLE_APPRAISAL_MATCHES
+  SALE_DATE_CONFLICT
+  BORROWER_NAME_CONFLICT
+  POOR_TEXT_QUALITY
+  PROPERTY_CLASSIFICATION_UNCERTAIN
+  LOW_CONFIDENCE
+  USER_REPORTED
+}
+
+enum ManualReviewTaskStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
+}
+
+enum ProcessingJobType {
+  DISCOVER_NOTICES
+  DOWNLOAD_DOCUMENT
+  EXTRACT_TEXT
+  OCR_PAGE
+  DETERMINISTIC_EXTRACT
+  AI_EXTRACT
+  ADDRESS_RESOLUTION
+  GENERATE_SUMMARY
+  RECHECK_NOTICE
+}
+
+enum ProcessingJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  DEAD_LETTER
+}
+
+enum OrganizationType {
+  LENDER
+  SERVICER
+  TRUSTEE_COMPANY
+  TITLE_COMPANY
+  LAW_FIRM
+  OTHER
+}
+
+enum CorrectionStatus {
+  OPEN
+  REVIEWED
+  APPLIED
+  REJECTED
+}
+
+enum ExportJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum NotificationEventType {
+  NEW_MATCHING_PROPERTY
+  ADDRESS_RESOLVED
+  SALE_DATE_CHANGED
+  SALE_CANCELED
+  SAVED_PROPERTY_REMINDER
+  UPCOMING_AUCTION_REMINDER
+}
+
+enum NotificationChannel {
+  EMAIL
+  WEB_PUSH
+  EXPO_PUSH
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Users, plans, subscriptions
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Mirrors auth.users 1:1 (id is the Supabase auth user id). See header note.
+model Profile {
+  id        String   @id
+  email     String   @unique
+  fullName  String?  @map("full_name")
+  role      Role     @default(USER)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  subscription            Subscription?
+  savedProperties         SavedProperty[]
+  correctionReportsFiled  CorrectionReport[]      @relation("CorrectionReportedBy")
+  correctionReportsClosed CorrectionReport[]      @relation("CorrectionResolvedBy")
+  exportJobs              ExportJob[]
+  notificationPreference  NotificationPreference?
+  notificationEvents      NotificationEvent[]
+  auditLogs               AuditLog[]
+  manualReviewAssignments ManualReviewTask[]
+  paymentEvents           PaymentEvent[]
+
+  @@map("profiles")
+}
+
+model PlanConfig {
+  id                     String   @id @default(uuid())
+  planKey                PlanKey  @unique @map("plan_key")
+  name                   String
+  priceCents             Int      @map("price_cents")
+  monthlyCsvExportLimit  Int      @default(0) @map("monthly_csv_export_limit")
+  maxSavedProperties     Int      @default(10) @map("max_saved_properties")
+  canViewDocuments       Boolean  @default(false) @map("can_view_documents")
+  canReceiveAlerts       Boolean  @default(false) @map("can_receive_alerts")
+  canViewRecordHistory   Boolean  @default(false) @map("can_view_record_history")
+  availableCountySlugs   String[] @default([]) @map("available_county_slugs")
+  description            String?
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  @@map("plan_configs")
+}
+
+model Subscription {
+  id        String             @id @default(uuid())
+  profileId String             @unique @map("profile_id")
+  profile   Profile            @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  plan      PlanKey            @default(FREE)
+  status    SubscriptionStatus @default(INACTIVE)
+
+  /// Provider-agnostic entitlement stays driven by `plan`/`status` above —
+  /// everything below is billing-mechanics detail the entitlement resolver
+  /// never inspects.
+  billingProvider        BillingProviderKind? @map("billing_provider")
+  internalPlanId         InternalPlanId?      @map("internal_plan_id")
+  billingInterval        BillingInterval?     @map("billing_interval")
+  externalCustomerId     String?              @map("external_customer_id")
+  externalSubscriptionId String?              @unique @map("external_subscription_id")
+
+  currentPeriodEnd        DateTime? @map("current_period_end")
+  csvExportsUsedThisMonth Int       @default(0) @map("csv_exports_used_this_month")
+  csvExportsResetAt       DateTime? @map("csv_exports_reset_at")
+
+  /// Only meaningful when plan = COUNTY — which single county this subscriber unlocked.
+  selectedCountyId String? @map("selected_county_id")
+  selectedCounty   County? @relation(fields: [selectedCountyId], references: [id], onDelete: SetNull)
+
+  trialEndsAt          DateTime? @map("trial_ends_at")
+  cancelAtPeriodEnd    Boolean   @default(false) @map("cancel_at_period_end")
+  canceledAt           DateTime? @map("canceled_at")
+
+  /// Failed-payment handling: access continues until this passes, then the
+  /// resolver falls back to FREE. Configured via PAYMENT_FAILURE_GRACE_PERIOD_DAYS.
+  paymentGracePeriodEndsAt DateTime? @map("payment_grace_period_ends_at")
+
+  /// Founding-member promotion — explicitly per-subscriber and admin-approved,
+  /// never assumed for every early signup.
+  isFoundingMember         Boolean   @default(false) @map("is_founding_member")
+  foundingMemberApprovedById String? @map("founding_member_approved_by_id")
+  foundingMemberApprovedAt  DateTime? @map("founding_member_approved_at")
+  promotionalMonthsGranted Int?      @map("promotional_months_granted")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  paymentEvents PaymentEvent[]
+
+  @@map("subscriptions")
+}
+
+/// Maps an internal plan SKU to whatever a given billing provider calls it.
+/// One internalPlanId can have a row per provider — application code must
+/// look prices/refs up here, never hardcode a Stripe price ID or an
+/// Authorize.net ARB plan reference.
+model PlanMapping {
+  id              String              @id @default(uuid())
+  internalPlanId  InternalPlanId      @map("internal_plan_id")
+  billingProvider BillingProviderKind @map("billing_provider")
+  externalRef     String              @map("external_ref")
+  billingInterval BillingInterval     @map("billing_interval")
+  priceCents      Int                 @map("price_cents")
+  currency        String              @default("usd")
+  isActive        Boolean             @default(true) @map("is_active")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+
+  @@unique([internalPlanId, billingProvider])
+  @@map("plan_mappings")
+}
+
+/// One row per real money movement (charge, refund) or subscription
+/// lifecycle event, regardless of provider — powers the account billing
+/// page's payment history.
+model PaymentEvent {
+  id                  String            @id @default(uuid())
+  profileId           String            @map("profile_id")
+  profile             Profile           @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  subscriptionId      String?           @map("subscription_id")
+  subscription        Subscription?     @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  billingProvider     BillingProviderKind @map("billing_provider")
+  type                PaymentEventType
+  externalTransactionId String?         @map("external_transaction_id")
+  amountCents         Int?              @map("amount_cents")
+  currency            String?           @default("usd")
+  status              String?
+  occurredAt          DateTime          @default(now()) @map("occurred_at")
+  rawPayload          Json?             @map("raw_payload")
+
+  @@index([profileId])
+  @@map("payment_events")
+}
+
+/// Idempotency guard for provider webhooks — the unique constraint is what
+/// actually prevents double-processing a redelivered event, not application
+/// logic alone.
+model WebhookEvent {
+  id              String              @id @default(uuid())
+  billingProvider BillingProviderKind @map("billing_provider")
+  externalEventId String              @map("external_event_id")
+  eventType       String              @map("event_type")
+  receivedAt      DateTime            @default(now()) @map("received_at")
+  processedAt     DateTime?           @map("processed_at")
+  payload         Json
+
+  @@unique([billingProvider, externalEventId])
+  @@map("webhook_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Counties & sources
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Where a county stands in the rollout pipeline (docs/COUNTY_ROADMAP.md).
+/// The public site must only ever present SUPPORTED counties as available —
+/// everything else is "coming soon" / not yet on the platform.
+enum CountyAvailabilityStatus {
+  REQUESTED
+  RESEARCHING
+  CONNECTOR_DEVELOPMENT
+  TESTING
+  SUPPORTED
+  TEMPORARILY_UNAVAILABLE
+  DEPRECATED
+}
+
+/// How a county's notices are actually obtained. Adapters must never bypass
+/// CAPTCHA, authentication, or rate limits — a county requiring more than an
+/// adapter can safely automate stays at MANUAL_ADMINISTRATOR_UPLOAD or
+/// PUBLIC_INFORMATION_REQUEST_IMPORT until that changes.
+enum SourceAccessMethod {
+  DIRECT_HTTP_DOWNLOAD
+  HTML_PAGE_PARSING
+  VENDOR_SEARCH_PORTAL
+  BROWSER_AUTOMATION
+  OFFICIAL_API
+  APPROVED_BULK_DATA_FEED
+  PUBLIC_INFORMATION_REQUEST_IMPORT
+  MANUAL_ADMINISTRATOR_UPLOAD
+}
+
+enum ConnectorHealth {
+  HEALTHY
+  DEGRADED
+  DOWN
+  UNKNOWN
+}
+
+enum CountyRequestStatus {
+  OPEN
+  UNDER_REVIEW
+  PLANNED
+  FULFILLED
+  DECLINED
+}
+
+/// Per-state jurisdictional configuration, so Texas-specific foreclosure
+/// procedure/terminology/timelines never get hardcoded into shared domain
+/// models — a future state ships by adding a row here, not by editing
+/// ForeclosureCase/Loan/etc.
+model StateConfig {
+  stateCode              String   @id @map("state_code") // e.g. "TX"
+  name                   String
+  foreclosureProcedureNotes String? @map("foreclosure_procedure_notes")
+  /// e.g. { "sale": "foreclosure sale", "trustee": "substitute trustee" } — labels this state's documents use for shared concepts.
+  noticeTerminology      Json?    @map("notice_terminology")
+  statutoryNoticeDays    Int?     @map("statutory_notice_days")
+  courtSystemNotes       String?  @map("court_system_notes")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  counties County[]
+
+  @@map("state_configs")
+}
+
+model County {
+  id        String                    @id @default(uuid())
+  name      String
+  state     String                    @default("TX")
+  stateConfig StateConfig?            @relation(fields: [state], references: [stateCode])
+  fipsCode  String?                   @map("fips_code")
+  slug      String                    @unique
+  /// Convenience flag kept in sync with availabilityStatus == SUPPORTED — cheaper for the public-facing queries that just need "can I show this county."
+  isActive  Boolean                   @default(false) @map("is_active")
+  availabilityStatus CountyAvailabilityStatus @default(REQUESTED) @map("availability_status")
+  estimatedPopulation Int?            @map("estimated_population")
+  timezone  String                    @default("America/Chicago")
+  createdAt DateTime                  @default(now()) @map("created_at")
+
+  sources          CountySource[]
+  properties       Property[]
+  foreclosureCases ForeclosureCase[]
+  sourceDocuments  SourceDocument[]
+  subscriptions    Subscription[]
+  requests         CountyRequest[]
+
+  @@map("counties")
+}
+
+/// A county a visitor asked us to add — the primary demand signal feeding
+/// the expansion roadmap's "user requests" prioritization criterion.
+model CountyRequest {
+  id                      String              @id @default(uuid())
+  requestedCountyName     String              @map("requested_county_name")
+  state                   String              @default("TX")
+  matchedCountyId         String?             @map("matched_county_id")
+  matchedCounty           County?             @relation(fields: [matchedCountyId], references: [id], onDelete: SetNull)
+  requesterEmail          String?             @map("requester_email")
+  notes                   String?
+  status                  CountyRequestStatus @default(OPEN)
+  createdAt               DateTime            @default(now()) @map("created_at")
+
+  @@index([state, requestedCountyName])
+  @@map("county_requests")
+}
+
+model CountySource {
+  id                        String              @id @default(uuid())
+  countyId                  String              @map("county_id")
+  county                    County              @relation(fields: [countyId], references: [id], onDelete: Cascade)
+  name                      String
+  baseUrl                   String              @map("base_url")
+  adapterKey                String              @map("adapter_key")
+  isEnabled                 Boolean             @default(false) @map("is_enabled")
+  pollIntervalMinutes       Int                 @default(1440) @map("poll_interval_minutes")
+
+  sourceVendor              String?             @map("source_vendor")
+  accessMethod              SourceAccessMethod? @map("access_method")
+  directDownloadsAvailable  Boolean?            @map("direct_downloads_available")
+  authenticationRequired    Boolean?            @map("authentication_required")
+  captchaPresent            Boolean?            @map("captcha_present")
+  documentsHaveEmbeddedText Boolean?            @map("documents_have_embedded_text")
+  ocrUsuallyRequired        Boolean?            @map("ocr_usually_required")
+  knownAccessRestrictions   String?             @map("known_access_restrictions")
+  connectorHealth           ConnectorHealth     @default(UNKNOWN) @map("connector_health")
+
+  lastAttemptAt             DateTime?           @map("last_attempt_at")
+  lastSuccessfulSyncAt      DateTime?           @map("last_successful_sync_at")
+  lastErrorMessage          String?             @map("last_error_message")
+
+  // Pilot / rollout KPIs (docs/COUNTY_ROADMAP.md) — raw counters; rates are
+  // computed from these plus ProcessingJob/ManualReviewTask data for the
+  // admin dashboard rather than duplicated as separately-maintained fields.
+  noticesDiscoveredCount    Int      @default(0) @map("notices_discovered_count")
+  documentsDownloadedCount  Int      @default(0) @map("documents_downloaded_count")
+  documentsProcessedCount   Int      @default(0) @map("documents_processed_count")
+  downloadFailureCount      Int      @default(0) @map("download_failure_count")
+  extractionFailureCount    Int      @default(0) @map("extraction_failure_count")
+  addressResolvedCount      Int      @default(0) @map("address_resolved_count")
+  manualReviewCount         Int      @default(0) @map("manual_review_count")
+  falseMatchReportedCount   Int      @default(0) @map("false_match_reported_count")
+  cancellationsDetectedCount Int     @default(0) @map("cancellations_detected_count")
+  connectorFailureCount     Int      @default(0) @map("connector_failure_count")
+  totalProcessingCostCents  Int      @default(0) @map("total_processing_cost_cents")
+  approxMonthlyNoticeVolume Int?     @map("approx_monthly_notice_volume")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sourceDocuments SourceDocument[]
+  processingJobs  ProcessingJob[]
+
+  @@map("county_sources")
+}
+
+/// Registry of provenance sources referenced by ExtractedField.sourceUrl /
+/// admin health widgets (e.g. "hidalgo_county_clerk", "google_geocoding").
+model DataSource {
+  id        String           @id @default(uuid())
+  key       String           @unique
+  name      String
+  type      FieldSourceType
+  baseUrl   String?          @map("base_url")
+  isEnabled Boolean          @default(true) @map("is_enabled")
+
+  @@map("data_sources")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Documents
+// ─────────────────────────────────────────────────────────────────────────
+
+model SourceDocument {
+  id                   String                   @id @default(uuid())
+  countyId             String                   @map("county_id")
+  county               County                   @relation(fields: [countyId], references: [id], onDelete: Cascade)
+  countySourceId       String?                  @map("county_source_id")
+  countySource         CountySource?            @relation(fields: [countySourceId], references: [id], onDelete: SetNull)
+  foreclosureCaseId    String?                  @map("foreclosure_case_id")
+  foreclosureCase      ForeclosureCase?         @relation(fields: [foreclosureCaseId], references: [id], onDelete: SetNull)
+
+  sourceUrl            String                   @map("source_url")
+  documentUrl          String                   @map("document_url")
+  filename             String
+  countyFilingNumber   String?                  @map("county_filing_number")
+  filingDate           DateTime?                @map("filing_date")
+  documentType         DocumentType             @default(UNKNOWN) @map("document_type")
+  pageCount            Int?                     @map("page_count")
+  dateCollected        DateTime                 @default(now()) @map("date_collected")
+  dateLastChecked      DateTime                 @default(now()) @map("date_last_checked")
+  sha256Hash           String                   @unique @map("sha256_hash")
+  storageKey           String?                  @map("storage_key")
+  extractionVersion    Int                      @default(1) @map("extraction_version")
+  extractionConfidence Float?                   @map("extraction_confidence")
+  manualReviewStatus   ManualReviewStatus       @default(NOT_NEEDED) @map("manual_review_status")
+  language             String?                  @default("en")
+  ocrUsed              Boolean                  @default(false) @map("ocr_used")
+  processingCostCents  Int                      @default(0) @map("processing_cost_cents")
+  status               DocumentProcessingStatus @default(DISCOVERED)
+  rawText              String?                  @map("raw_text")
+  createdAt            DateTime                 @default(now()) @map("created_at")
+  updatedAt            DateTime                 @updatedAt @map("updated_at")
+
+  extractedFields  ExtractedField[]
+  legalDescriptions LegalDescription[]
+  foreclosureSales ForeclosureSale[]
+  manualReviewTasks ManualReviewTask[]
+  processingJobs   ProcessingJob[]
+
+  @@index([countyId])
+  @@index([foreclosureCaseId])
+  @@index([manualReviewStatus])
+  @@map("source_documents")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// People & organizations
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Deliberately thin. Phone/email are nullable and unpopulated in the MVP —
+/// see product requirement: no personal phone/email exposure without a
+/// lawful-sourcing/vendor review.
+model Person {
+  id             String   @id @default(uuid())
+  fullName       String   @map("full_name")
+  firstName      String?  @map("first_name")
+  lastName       String?  @map("last_name")
+  mailingAddress String?  @map("mailing_address")
+  phone          String?
+  email          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  casesAsBorrower    ForeclosureCase[] @relation("CaseBorrower")
+  casesAsGrantor     ForeclosureCase[] @relation("CaseGrantor")
+  casesAsOwner       ForeclosureCase[] @relation("CaseCurrentOwner")
+  trustees           Trustee[]
+
+  @@index([fullName])
+  @@map("people")
+}
+
+model Organization {
+  id             String            @id @default(uuid())
+  name           String
+  type           OrganizationType  @default(OTHER)
+  mailingAddress String?           @map("mailing_address")
+  phone          String?
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  loansAsOriginalLender  Loan[]     @relation("LoanOriginalLender")
+  loansAsCurrentMortgagee Loan[]    @relation("LoanCurrentMortgagee")
+  loansAsServicer        Loan[]     @relation("LoanServicer")
+  trustees               Trustee[]
+
+  @@index([name])
+  @@map("organizations")
+}
+
+model Trustee {
+  id             String        @id @default(uuid())
+  personId       String?       @map("person_id")
+  person         Person?       @relation(fields: [personId], references: [id], onDelete: SetNull)
+  organizationId String?       @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  phone          String?
+  mailingAddress String?       @map("mailing_address")
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  sales ForeclosureSale[]
+
+  @@map("trustees")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Foreclosure case / sale / loan
+// ─────────────────────────────────────────────────────────────────────────
+
+/// The durable "this borrower's foreclosure situation" record. Multiple
+/// SourceDocuments (original notice, amendment, cancellation) and multiple
+/// ForeclosureSales (postponements) attach to one case over time.
+model ForeclosureCase {
+  id                String          @id @default(uuid())
+  countyId          String          @map("county_id")
+  county            County          @relation(fields: [countyId], references: [id], onDelete: Cascade)
+  propertyId        String?         @map("property_id")
+  property          Property?       @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  caseNumber        String?         @map("case_number")
+  status            SaleStatus      @default(SCHEDULED)
+  entityType        PartyEntityType @default(UNKNOWN) @map("entity_type")
+  ownerOccupied     Boolean?        @map("owner_occupied")
+  homestead         Boolean?
+
+  borrowerPersonId    String? @map("borrower_person_id")
+  borrower            Person? @relation("CaseBorrower", fields: [borrowerPersonId], references: [id], onDelete: SetNull)
+  grantorPersonId     String? @map("grantor_person_id")
+  grantor             Person? @relation("CaseGrantor", fields: [grantorPersonId], references: [id], onDelete: SetNull)
+  currentOwnerPersonId String? @map("current_owner_person_id")
+  currentOwner        Person? @relation("CaseCurrentOwner", fields: [currentOwnerPersonId], references: [id], onDelete: SetNull)
+  coOwnerNames        String[] @default([]) @map("co_owner_names")
+
+  summaryText        String?   @map("summary_text")
+  summaryGeneratedAt DateTime? @map("summary_generated_at")
+  lastVerifiedAt     DateTime? @map("last_verified_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  documents         SourceDocument[]
+  sales             ForeclosureSale[]
+  loan              Loan?
+  addressCandidates PropertyAddress[]
+  legalDescriptions LegalDescription[]
+  manualReviewTasks ManualReviewTask[]
+  correctionReports CorrectionReport[]
+  processingJobs    ProcessingJob[]
+
+  @@index([countyId])
+  @@index([propertyId])
+  @@index([status])
+  @@map("foreclosure_cases")
+}
+
+model ForeclosureSale {
+  id                 String              @id @default(uuid())
+  foreclosureCaseId  String              @map("foreclosure_case_id")
+  foreclosureCase    ForeclosureCase     @relation(fields: [foreclosureCaseId], references: [id], onDelete: Cascade)
+  sourceDocumentId   String?             @map("source_document_id")
+  sourceDocument     SourceDocument?     @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+
+  saleDate           DateTime?           @map("sale_date")
+  saleTime           String?             @map("sale_time")
+  saleLocation       String?             @map("sale_location")
+  noticePostingDate  DateTime?           @map("notice_posting_date")
+  earliestSaleDate   DateTime?           @map("earliest_sale_date")
+  saleStatus         SaleStatus          @default(SCHEDULED) @map("sale_status")
+  cancellationStatus CancellationStatus  @default(NOT_CANCELED) @map("cancellation_status")
+
+  trusteeId String?  @map("trustee_id")
+  trustee   Trustee? @relation(fields: [trusteeId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([foreclosureCaseId])
+  @@index([saleDate])
+  @@map("foreclosure_sales")
+}
+
+model Loan {
+  id                             String   @id @default(uuid())
+  foreclosureCaseId              String   @unique @map("foreclosure_case_id")
+  foreclosureCase                ForeclosureCase @relation(fields: [foreclosureCaseId], references: [id], onDelete: Cascade)
+
+  originalLenderOrgId    String?       @map("original_lender_org_id")
+  originalLender         Organization? @relation("LoanOriginalLender", fields: [originalLenderOrgId], references: [id], onDelete: SetNull)
+  currentMortgageeOrgId  String?       @map("current_mortgagee_org_id")
+  currentMortgagee       Organization? @relation("LoanCurrentMortgagee", fields: [currentMortgageeOrgId], references: [id], onDelete: SetNull)
+  mortgageServicerOrgId  String?       @map("mortgage_servicer_org_id")
+  mortgageServicer       Organization? @relation("LoanServicer", fields: [mortgageServicerOrgId], references: [id], onDelete: SetNull)
+
+  originalPrincipalAmountCents   Int?      @map("original_principal_amount_cents")
+  originalLoanDate                DateTime? @map("original_loan_date")
+  deedOfTrustDate                  DateTime? @map("deed_of_trust_date")
+  instrumentNumber                  String?   @map("instrument_number")
+  recordingDate                      DateTime? @map("recording_date")
+  loanMaturityDate                    DateTime? @map("loan_maturity_date")
+  currentPrincipalBalanceCents      Int?      @map("current_principal_balance_cents")
+
+  estimatedRemainingBalanceCents Int?    @map("estimated_remaining_balance_cents")
+  remainingBalanceMethodology    String? @map("remaining_balance_methodology")
+  remainingBalanceConfidence     Float?  @map("remaining_balance_confidence")
+  remainingBalanceAssumptions    Json?   @map("remaining_balance_assumptions")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([originalPrincipalAmountCents])
+  @@map("loans")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Property & address resolution
+// ─────────────────────────────────────────────────────────────────────────
+
+model Property {
+  id       String @id @default(uuid())
+  countyId String @map("county_id")
+  county   County @relation(fields: [countyId], references: [id], onDelete: Cascade)
+
+  propertyStreetAddress String? @map("property_street_address")
+  city                   String?
+  state                  String  @default("TX")
+  zipCode                String? @map("zip_code")
+  legalDescription       String? @map("legal_description")
+  subdivision            String?
+  lot                    String?
+  block                  String?
+  acreage                Float?
+  propertyIdNumber       String? @map("property_id_number")
+  geographicId           String? @map("geographic_id")
+  latitude               Float?
+  longitude              Float?
+
+  propertyType           PropertyType           @default(UNKNOWN) @map("property_type")
+  classification         PropertyClassification @default(UNKNOWN)
+
+  appraisedValueCents      Int?      @map("appraised_value_cents")
+  assessedValueCents       Int?      @map("assessed_value_cents")
+  estimatedMarketValueCents Int?     @map("estimated_market_value_cents")
+  lastSaleDate              DateTime? @map("last_sale_date")
+  lastSalePriceCents        Int?      @map("last_sale_price_cents")
+
+  addressResolutionMethod      AddressResolutionMethod @default(UNRESOLVED) @map("address_resolution_method")
+  addressResolutionConfidence  Float?                  @map("address_resolution_confidence")
+  addressResolutionExplanation String?                 @map("address_resolution_explanation")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  foreclosureCases  ForeclosureCase[]
+  addressCandidates PropertyAddress[]
+  savedBy           SavedProperty[]
+
+  @@index([countyId])
+  @@index([city])
+  @@index([zipCode])
+  @@index([propertyType])
+  @@index([classification])
+  @@index([addressResolutionConfidence])
+  @@index([appraisedValueCents])
+  @@map("properties")
+}
+
+/// One row per candidate address match considered during resolution.
+/// `isSelected` marks the winner; keeping the losers preserves the
+/// "conflicting-match handling" trail for manual review / audit.
+model PropertyAddress {
+  id                String           @id @default(uuid())
+  foreclosureCaseId String           @map("foreclosure_case_id")
+  foreclosureCase   ForeclosureCase  @relation(fields: [foreclosureCaseId], references: [id], onDelete: Cascade)
+  propertyId        String?          @map("property_id")
+  property          Property?        @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+
+  rawAddressText String
+  method         AddressResolutionMethod
+  confidence     Float
+  explanation    String?
+  isSelected     Boolean                 @default(false) @map("is_selected")
+  createdAt      DateTime                @default(now()) @map("created_at")
+
+  @@index([foreclosureCaseId])
+  @@map("property_addresses")
+}
+
+model LegalDescription {
+  id                 String           @id @default(uuid())
+  foreclosureCaseId  String           @map("foreclosure_case_id")
+  foreclosureCase    ForeclosureCase  @relation(fields: [foreclosureCaseId], references: [id], onDelete: Cascade)
+  sourceDocumentId   String?          @map("source_document_id")
+  sourceDocument     SourceDocument?  @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+
+  rawText        String
+  subdivision    String?
+  lot            String?
+  block          String?
+  acreage        Float?
+  surveyName     String? @map("survey_name")
+  abstractNumber String? @map("abstract_number")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([foreclosureCaseId])
+  @@map("legal_descriptions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Field-level provenance (the generic "SourcedField" table)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One row per extracted/derived field value, carrying exactly the metadata
+/// described by SourcedField<T> in the product spec. `entityType`+`entityId`
+/// point at the owning row (e.g. "ForeclosureCase" / <uuid>, "Loan" / <uuid>,
+/// "Property" / <uuid>). The UI joins this table to render source badges.
+model ExtractedField {
+  id               String           @id @default(uuid())
+  sourceDocumentId String?          @map("source_document_id")
+  sourceDocument   SourceDocument?  @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+
+  entityType       String           @map("entity_type")
+  entityId         String           @map("entity_id")
+  fieldName        String           @map("field_name")
+  value            String?
+  sourceType       FieldSourceType  @map("source_type")
+  sourceUrl        String?          @map("source_url")
+  confidence       Float?
+  verifiedAt       DateTime?        @map("verified_at")
+  methodology      String?
+  explicitlyStated Boolean          @default(false) @map("explicitly_stated")
+  supportingText   String?          @map("supporting_text")
+  pageNumber       Int?             @map("page_number")
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@index([sourceDocumentId])
+  @@map("extracted_fields")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Jobs, review queue, cost control
+// ─────────────────────────────────────────────────────────────────────────
+
+model ProcessingJob {
+  id                String              @id @default(uuid())
+  type              ProcessingJobType
+  status            ProcessingJobStatus @default(PENDING)
+  sourceDocumentId  String?             @map("source_document_id")
+  sourceDocument    SourceDocument?     @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  foreclosureCaseId String?             @map("foreclosure_case_id")
+  foreclosureCase   ForeclosureCase?    @relation(fields: [foreclosureCaseId], references: [id], onDelete: SetNull)
+  countySourceId    String?             @map("county_source_id")
+  countySource      CountySource?       @relation(fields: [countySourceId], references: [id], onDelete: SetNull)
+
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5) @map("max_attempts")
+  lastError   String?  @map("last_error")
+  costCents   Int      @default(0) @map("cost_cents")
+  payload     Json?
+  runAt       DateTime @default(now()) @map("run_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([status, runAt])
+  @@index([type])
+  @@map("processing_jobs")
+}
+
+model ManualReviewTask {
+  id                 String                 @id @default(uuid())
+  sourceDocumentId   String?                @map("source_document_id")
+  sourceDocument     SourceDocument?        @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  foreclosureCaseId  String?                @map("foreclosure_case_id")
+  foreclosureCase    ForeclosureCase?       @relation(fields: [foreclosureCaseId], references: [id], onDelete: SetNull)
+
+  reason           ManualReviewReason
+  status           ManualReviewTaskStatus @default(OPEN)
+  assignedToId     String?                @map("assigned_to_id")
+  assignedTo       Profile?               @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  notes            String?
+  createdAt        DateTime               @default(now()) @map("created_at")
+  resolvedAt       DateTime?              @map("resolved_at")
+
+  @@index([status])
+  @@map("manual_review_tasks")
+}
+
+model BudgetLimit {
+  id                String   @id @default(uuid())
+  key               String   @unique
+  limitCents        Int      @map("limit_cents")
+  alertThresholdPct Int      @default(80) @map("alert_threshold_pct")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("budget_limits")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// User-facing: saved properties, exports, corrections, audit
+// ─────────────────────────────────────────────────────────────────────────
+
+model SavedProperty {
+  id         String   @id @default(uuid())
+  profileId  String   @map("profile_id")
+  profile    Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  propertyId String   @map("property_id")
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([profileId, propertyId])
+  @@map("saved_properties")
+}
+
+model ExportJob {
+  id           String         @id @default(uuid())
+  profileId    String         @map("profile_id")
+  profile      Profile        @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  filterParams Json           @map("filter_params")
+  rowCount     Int?           @map("row_count")
+  status       ExportJobStatus @default(PENDING)
+  storageKey   String?        @map("storage_key")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  completedAt  DateTime?      @map("completed_at")
+
+  @@map("export_jobs")
+}
+
+model CorrectionReport {
+  id                 String            @id @default(uuid())
+  profileId          String?           @map("profile_id")
+  profile            Profile?          @relation("CorrectionReportedBy", fields: [profileId], references: [id], onDelete: SetNull)
+  propertyId         String?           @map("property_id")
+  foreclosureCaseId  String?           @map("foreclosure_case_id")
+  foreclosureCase    ForeclosureCase?  @relation(fields: [foreclosureCaseId], references: [id], onDelete: SetNull)
+  fieldName          String?           @map("field_name")
+  description        String
+  status             CorrectionStatus  @default(OPEN)
+  createdAt          DateTime          @default(now()) @map("created_at")
+  resolvedAt         DateTime?         @map("resolved_at")
+  resolvedById       String?           @map("resolved_by_id")
+  resolvedBy         Profile?          @relation("CorrectionResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@map("correction_reports")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  actorId       String?  @map("actor_id")
+  actor         Profile? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action        String
+  entityType    String   @map("entity_type")
+  entityId      String   @map("entity_id")
+  beforeJson    Json?    @map("before_json")
+  afterJson     Json?    @map("after_json")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Notifications (platform-neutral model; delivery adapters live in code)
+// ─────────────────────────────────────────────────────────────────────────
+
+model NotificationPreference {
+  id                String                   @id @default(uuid())
+  profileId         String                   @unique @map("profile_id")
+  profile           Profile                  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  emailEnabled      Boolean                  @default(true) @map("email_enabled")
+  webPushEnabled    Boolean                  @default(false) @map("web_push_enabled")
+  expoPushEnabled   Boolean                  @default(false) @map("expo_push_enabled")
+  eventTypesEnabled NotificationEventType[]  @default([NEW_MATCHING_PROPERTY, SALE_DATE_CHANGED, SALE_CANCELED, UPCOMING_AUCTION_REMINDER]) @map("event_types_enabled")
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+
+  @@map("notification_preferences")
+}
+
+model NotificationEvent {
+  id                String                @id @default(uuid())
+  profileId         String                @map("profile_id")
+  profile           Profile               @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  type              NotificationEventType
+  payload           Json?
+  deliveredChannels NotificationChannel[] @default([]) @map("delivered_channels")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  readAt            DateTime?             @map("read_at")
+
+  @@index([profileId, createdAt])
+  @@map("notification_events")
+}

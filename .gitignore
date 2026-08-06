@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+apps/web/.next/
+apps/web/out/
+
+# Expo
+apps/mobile/.expo/
+apps/mobile/dist/
+
+# Turborepo
+.turbo/
+
+# Build output
+dist/
+build/
+
+# Env files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local object storage (dev)
+storage/
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Prisma
+packages/database/prisma/dev.db
+packages/database/prisma/migrations/**/migration_lock.toml
