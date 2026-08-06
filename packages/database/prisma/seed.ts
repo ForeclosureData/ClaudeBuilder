@@ -20,6 +20,17 @@ const prisma = new PrismaClient();
 const DEMO_USER_ID = "00000000-0000-4000-8000-000000000001";
 const DEMO_ADMIN_ID = "00000000-0000-4000-8000-000000000002";
 
+/**
+ * Real Supabase Auth account for testing the app from a customer's
+ * perspective. This id must match the id of a real user created in the
+ * connected Supabase project's Authentication > Users screen — Supabase
+ * and this app's Postgres (Netlify DB/Neon) are separate databases, so
+ * there is no trigger that creates this row automatically; it has to be
+ * seeded here with the matching UUID.
+ */
+const REAL_TEST_USER_ID = "81aa2215-5b4d-40f6-864a-b52e72a24817";
+const REAL_TEST_USER_EMAIL = "support@foreclosuredata.net";
+
 async function main() {
   console.log("Seeding fictional demo data...");
 
@@ -81,10 +92,20 @@ async function main() {
     update: {},
     create: { id: DEMO_ADMIN_ID, email: "admin@example.com", fullName: "Ada Admin", role: Role.ADMIN },
   });
+  const realTestUser = await prisma.profile.upsert({
+    where: { id: REAL_TEST_USER_ID },
+    update: { email: REAL_TEST_USER_EMAIL },
+    create: { id: REAL_TEST_USER_ID, email: REAL_TEST_USER_EMAIL, fullName: "ForeclosureData Test Account", role: Role.USER },
+  });
   await prisma.notificationPreference.upsert({
     where: { profileId: demoUser.id },
     update: {},
     create: { profileId: demoUser.id },
+  });
+  await prisma.notificationPreference.upsert({
+    where: { profileId: realTestUser.id },
+    update: {},
+    create: { profileId: realTestUser.id },
   });
 
   // ── State-level config (Texas-specific rules live here, not hardcoded) ──
@@ -274,6 +295,24 @@ async function main() {
       externalSubscriptionId: "mock_sub_demo_admin",
       isFoundingMember: true,
       foundingMemberApprovedAt: new Date(),
+    },
+  });
+  // Real test account (Texas Unlimited tier — full access to every
+  // feature so it's usable for testing from a customer's perspective,
+  // not scoped to a single county).
+  await prisma.subscription.upsert({
+    where: { profileId: realTestUser.id },
+    update: {},
+    create: {
+      profileId: realTestUser.id,
+      plan: PlanKey.UNLIMITED,
+      status: SubscriptionStatus.ACTIVE,
+      billingProvider: "MOCK",
+      internalPlanId: "texas_monthly",
+      billingInterval: "MONTHLY",
+      externalCustomerId: "mock_cust_real_test_user",
+      externalSubscriptionId: "mock_sub_real_test_user",
+      currentPeriodEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
     },
   });
 
