@@ -12,6 +12,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:rls": "prisma db execute --file sql/rls.sql --schema prisma/schema.prisma",
     "generate": "prisma generate",
+    "postinstall": "prisma generate",
     "build": "prisma generate",
     "typecheck": "tsc --noEmit"
   },

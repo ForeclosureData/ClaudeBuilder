@@ -5,6 +5,11 @@
     find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete && \
     pnpm install --no-frozen-lockfile && \
     pnpm --filter @foreclosuredata/database run generate && \
+    echo "--- PRISMA CLIENT DIAGNOSTIC ---" && \
+    (grep -c appraisalPropertyCandidate node_modules/.prisma/client/index.d.ts || echo "MISSING in node_modules/.prisma/client/index.d.ts") && \
+    (node -e "console.log(require.resolve('.prisma/client/default', {paths:['./node_modules/@prisma/client']}))" || echo "RESOLVE FAILED") && \
+    (grep -c appraisalPropertyCandidate packages/database/node_modules/.prisma/client/index.d.ts 2>/dev/null || echo "no packages/database/node_modules/.prisma/client") && \
+    echo "--- END DIAGNOSTIC ---" && \
     export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
     export DIRECT_URL="$DATABASE_URL" && \
     if [ -n "$DATABASE_URL" ]; then \
