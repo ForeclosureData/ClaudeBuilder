@@ -5,6 +5,7 @@
     find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete && \
     pnpm install --no-frozen-lockfile && \
     pnpm --filter @foreclosuredata/database run generate && \
+    echo "--- NODE VERSION: $(node --version) ---" && \
     echo "--- PRISMA CLIENT DIAGNOSTIC ---" && \
     (grep -c appraisalPropertyCandidate node_modules/.prisma/client/index.d.ts || echo "MISSING in node_modules/.prisma/client/index.d.ts") && \
     (node -e "console.log(require.resolve('.prisma/client/default', {paths:['./node_modules/@prisma/client']}))" || echo "RESOLVE FAILED") && \
@@ -26,7 +27,7 @@
   """
 
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "22"
   BILLING_PROVIDER = "mock"
   THIRD_PARTY_AVM_ENABLED = "false"
   ZILLOW_API_ENABLED = "false"
