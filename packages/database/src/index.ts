@@ -1,21 +1,30 @@
 import { PrismaClient } from "@prisma/client";
+import { getConnectionString } from "@netlify/database";
+import { neonConfig, Pool } from "@neondatabase/serverless";
+import { PrismaNeon } from "@prisma/adapter-neon";
+import ws from "ws";
 
 declare global {
   // eslint-disable-next-line no-var
   var __ftiPrisma: PrismaClient | undefined;
 }
 
+neonConfig.webSocketConstructor = ws;
+
 /**
- * On Netlify, with no DATABASE_URL configured (e.g. a project's own Supabase
- * Postgres hasn't been set up yet), fall back to Netlify's own auto-provisioned
- * Postgres (Neon) via `@netlify/database`. A real DATABASE_URL (Supabase or
- * otherwise) always takes precedence — this only fires when one hasn't been set.
+ * With no DATABASE_URL configured (e.g. a project's own Supabase Postgres
+ * hasn't been set up yet), fall back to Netlify's own auto-provisioned
+ * Postgres (Neon) via `@netlify/database`, when available. A real
+ * DATABASE_URL (Supabase or otherwise) always takes precedence — this only
+ * fires when one hasn't been set. Deliberately not gated on
+ * `process.env.NETLIFY`: that's reliably set during Netlify's build but not
+ * guaranteed inside the deployed function's own runtime, where this fallback
+ * matters just as much — the try/catch is what makes this safe to attempt
+ * unconditionally (it no-ops cleanly anywhere else, e.g. local dev).
  */
 let usingNetlifyFallbackDb = false;
-if (!process.env.DATABASE_URL && process.env.NETLIFY) {
+if (!process.env.DATABASE_URL) {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { getConnectionString } = require("@netlify/database") as typeof import("@netlify/database");
     const connectionString = getConnectionString();
     if (connectionString) {
       process.env.DATABASE_URL = connectionString;
@@ -23,8 +32,8 @@ if (!process.env.DATABASE_URL && process.env.NETLIFY) {
       usingNetlifyFallbackDb = true;
     }
   } catch {
-    // @netlify/database not usable in this context — leave DATABASE_URL unset,
-    // Prisma will throw its normal "Environment variable not found" error.
+    // Not resolvable in this context — leave DATABASE_URL unset, Prisma will
+    // throw its normal "Environment variable not found" error.
   }
 }
 
@@ -40,12 +49,6 @@ if (!process.env.DATABASE_URL && process.env.NETLIFY) {
 function createPrismaClient(): PrismaClient {
   const log = process.env.NODE_ENV === "development" ? (["warn", "error"] as const) : (["error"] as const);
   if (usingNetlifyFallbackDb) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { neonConfig, Pool } = require("@neondatabase/serverless") as typeof import("@neondatabase/serverless");
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { PrismaNeon } = require("@prisma/adapter-neon") as typeof import("@prisma/adapter-neon");
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    neonConfig.webSocketConstructor = require("ws");
     const pool = new Pool({ connectionString: process.env.DATABASE_URL });
     const adapter = new PrismaNeon(pool);
     return new PrismaClient({ adapter, log: [...log] });
