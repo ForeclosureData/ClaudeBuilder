@@ -12,6 +12,14 @@ const nextConfig = {
   ],
   experimental: {
     serverComponentsExternalPackages: ["@prisma/client", "prisma"],
+    // With node-linker=hoisted, the generated Prisma Client (including its
+    // native query-engine binaries) lands in the repo-root node_modules.
+    // Next's serverless output tracing can't discover those binaries via
+    // static import analysis alone, so they must be listed explicitly or
+    // Netlify's function bundle ends up missing libquery_engine-*.so.node.
+    outputFileTracingIncludes: {
+      "/**": ["../../node_modules/.prisma/client/**/*"],
+    },
   },
   async headers() {
     return [
