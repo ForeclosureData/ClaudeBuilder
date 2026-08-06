@@ -94,8 +94,8 @@ async function main() {
   });
   const realTestUser = await prisma.profile.upsert({
     where: { id: REAL_TEST_USER_ID },
-    update: { email: REAL_TEST_USER_EMAIL },
-    create: { id: REAL_TEST_USER_ID, email: REAL_TEST_USER_EMAIL, fullName: "ForeclosureData Test Account", role: Role.USER },
+    update: { email: REAL_TEST_USER_EMAIL, role: Role.ADMIN },
+    create: { id: REAL_TEST_USER_ID, email: REAL_TEST_USER_EMAIL, fullName: "ForeclosureData Test Account", role: Role.ADMIN },
   });
   await prisma.notificationPreference.upsert({
     where: { profileId: demoUser.id },
