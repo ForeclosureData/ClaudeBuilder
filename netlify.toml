@@ -1,7 +1,8 @@
 [build]
   publish = "apps/web/.next"
   command = """
-    rm -rf node_modules apps/*/node_modules packages/*/node_modules && \
+    rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/web/.next && \
+    find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete && \
     pnpm install --no-frozen-lockfile && \
     pnpm --filter @foreclosuredata/database run generate && \
     export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
