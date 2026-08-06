@@ -8,6 +8,25 @@ export async function GET() {
   };
 
   try {
+    const netlifyDb = await import("@netlify/database");
+    info.netlifyDbModuleKeys = Object.keys(netlifyDb);
+    try {
+      const connectionString = netlifyDb.getConnectionString();
+      info.getConnectionString = { ok: true, hasValue: Boolean(connectionString) };
+    } catch (e) {
+      info.getConnectionString = {
+        ok: false,
+        error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+      };
+    }
+  } catch (e) {
+    info.netlifyDbImport = {
+      ok: false,
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    };
+  }
+
+  try {
     const { prisma } = await import("@foreclosuredata/database");
     const count = await prisma.county.count();
     info.dbQuery = { ok: true, count };
@@ -15,7 +34,6 @@ export async function GET() {
     info.dbQuery = {
       ok: false,
       error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
-      stack: e instanceof Error ? e.stack : undefined,
     };
   }
 
