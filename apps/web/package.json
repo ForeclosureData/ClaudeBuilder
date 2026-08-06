@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@netlify/database": "^1.0.0",
     "@foreclosuredata/api-client": "workspace:*",
     "@foreclosuredata/auth": "workspace:*",
     "@foreclosuredata/config": "workspace:*",

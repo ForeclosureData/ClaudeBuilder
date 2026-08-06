@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@netlify/database':
+        specifier: ^1.0.0
+        version: 1.1.0
     devDependencies:
       turbo:
         specifier: ^2.0.9
@@ -38,6 +42,9 @@ importers:
       '@foreclosuredata/validation':
         specifier: workspace:*
         version: link:../../packages/validation
+      '@netlify/database':
+        specifier: ^1.0.0
+        version: 1.1.0
       '@supabase/ssr':
         specifier: ^0.4.0
         version: 0.4.1(@supabase/supabase-js@2.112.1)

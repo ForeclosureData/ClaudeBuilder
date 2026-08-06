@@ -21,6 +21,9 @@
     "db:seed": "pnpm --filter @foreclosuredata/database db:seed",
     "db:studio": "pnpm --filter @foreclosuredata/database db:studio"
   },
+  "dependencies": {
+    "@netlify/database": "^1.0.0"
+  },
   "devDependencies": {
     "turbo": "^2.0.9",
     "typescript": "^5.5.4"
