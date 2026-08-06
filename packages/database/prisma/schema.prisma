@@ -160,10 +160,23 @@ enum AddressResolutionMethod {
   COMMONLY_KNOWN_AS_PHRASE
   LEGAL_DESCRIPTION_MATCH
   PROPERTY_ID_MATCH
+  GEOGRAPHIC_ID_MATCH
   OWNER_MAILING_ADDRESS_MATCH
+  MULTI_FIELD_MATCH
   GEOCODING
   MANUAL
   UNRESOLVED
+}
+
+/// Generic valuation "kind" a PropertyValuation row carries. Zestimate is a
+/// Zillow trademark — ZESTIMATE must only ever be used for a value that
+/// actually came from an authorized Zillow integration (see ZillowAuthorizedProvider).
+enum ValuationType {
+  ZESTIMATE
+  COUNTY_APPRAISED_VALUE
+  COUNTY_MARKET_VALUE
+  THIRD_PARTY_AVM
+  INTERNAL_ESTIMATE
 }
 
 enum FieldSourceType {
@@ -204,6 +217,13 @@ enum ProcessingJobType {
   ADDRESS_RESOLUTION
   GENERATE_SUMMARY
   RECHECK_NOTICE
+  APPRAISAL_PROPERTY_SEARCH
+  APPRAISAL_PROPERTY_DETAILS_FETCH
+  PROPERTY_CANDIDATE_SCORING
+  PROPERTY_MATCH_REVIEW
+  VALUATION_PROVIDER_LOOKUP
+  VALUATION_REFRESH
+  STALE_VALUATION_CLEANUP
 }
 
 enum ProcessingJobStatus {
@@ -719,6 +739,8 @@ model ForeclosureCase {
   manualReviewTasks ManualReviewTask[]
   correctionReports CorrectionReport[]
   processingJobs    ProcessingJob[]
+  appraisalCandidates  AppraisalPropertyCandidate[]
+  resolutionAttempts   PropertyResolutionAttempt[]
 
   @@index([countyId])
   @@index([propertyId])
@@ -826,6 +848,8 @@ model Property {
   foreclosureCases  ForeclosureCase[]
   addressCandidates PropertyAddress[]
   savedBy           SavedProperty[]
+  appraisalValueHistory AppraisalValueHistory[]
+  valuations        PropertyValuation[]
 
   @@index([countyId])
   @@index([city])
@@ -876,6 +900,148 @@ model LegalDescription {
 
   @@index([foreclosureCaseId])
   @@map("legal_descriptions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// County appraisal-district resolution: candidates, scoring, history
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One row per candidate a CountyAppraisalAdapter search returned while
+/// trying to resolve a case's property. Richer than PropertyAddress (which
+/// only tracks the winning address text) — this is the full appraisal-roll
+/// snapshot the scoring engine and the admin review screen need, including
+/// the losing candidates and *why* they lost (conflictingFields).
+model AppraisalPropertyCandidate {
+  id                    String          @id @default(uuid())
+  foreclosureCaseId     String          @map("foreclosure_case_id")
+  foreclosureCase       ForeclosureCase @relation(fields: [foreclosureCaseId], references: [id], onDelete: Cascade)
+
+  /// The CountyAppraisalAdapter.countyCode that produced this candidate (e.g. "hidalgo-tx").
+  countyAppraisalSourceKey String  @map("county_appraisal_source_key")
+  sourcePropertyId         String  @map("source_property_id")
+  sourceUrl                String? @map("source_url")
+
+  ownerName          String? @map("owner_name")
+  situsAddress       String? @map("situs_address")
+  city               String?
+  zipCode            String? @map("zip_code")
+  parcelId           String? @map("parcel_id")
+  geographicId       String? @map("geographic_id")
+  legalDescription   String? @map("legal_description")
+  subdivision        String?
+  lot                String?
+  block              String?
+  acreage            Float?
+  classification     PropertyClassification @default(UNKNOWN)
+
+  landValueCents         Int? @map("land_value_cents")
+  improvementValueCents  Int? @map("improvement_value_cents")
+  appraisedValueCents    Int? @map("appraised_value_cents")
+  assessedValueCents     Int? @map("assessed_value_cents")
+  marketValueCents       Int? @map("market_value_cents")
+  homestead              Boolean?
+  taxYear                Int?     @map("tax_year")
+
+  score              Float?
+  matchedFields      String[] @default([]) @map("matched_fields")
+  conflictingFields  String[] @default([]) @map("conflicting_fields")
+  isSelected         Boolean  @default(false) @map("is_selected")
+
+  retrievedAt DateTime @default(now()) @map("retrieved_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([foreclosureCaseId])
+  @@index([countyAppraisalSourceKey])
+  @@map("appraisal_property_candidates")
+}
+
+/// One row per full resolver run for a case — a durable copy of the
+/// PropertyResolutionResult, independent of the (mutable) Property row it
+/// eventually writes to. Gives the admin screen and audit trail a history
+/// even across re-runs ("search again").
+model PropertyResolutionAttempt {
+  id                 String          @id @default(uuid())
+  foreclosureCaseId  String          @map("foreclosure_case_id")
+  foreclosureCase    ForeclosureCase @relation(fields: [foreclosureCaseId], references: [id], onDelete: Cascade)
+
+  resolutionMethod     AddressResolutionMethod
+  confidence           Float
+  explanation          String
+  matchedFields        String[] @default([]) @map("matched_fields")
+  conflictingFields    String[] @default([]) @map("conflicting_fields")
+  candidateCount       Int      @default(0) @map("candidate_count")
+  requiresManualReview Boolean  @default(false) @map("requires_manual_review")
+  selectedCandidateId  String?  @map("selected_candidate_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([foreclosureCaseId])
+  @@map("property_resolution_attempts")
+}
+
+/// Append-only annual appraisal values — never overwritten, so a property's
+/// value history across tax years is preserved instead of only keeping the
+/// latest snapshot on Property.appraisedValueCents.
+model AppraisalValueHistory {
+  id         String   @id @default(uuid())
+  propertyId String   @map("property_id")
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  taxYear                Int      @map("tax_year")
+  landValueCents          Int?     @map("land_value_cents")
+  improvementValueCents   Int?     @map("improvement_value_cents")
+  appraisedValueCents     Int?     @map("appraised_value_cents")
+  assessedValueCents      Int?     @map("assessed_value_cents")
+  marketValueCents        Int?     @map("market_value_cents")
+  homestead               Boolean?
+  exemptions               String[] @default([])
+
+  sourceUrl   String?  @map("source_url")
+  retrievedAt DateTime @default(now()) @map("retrieved_at")
+
+  @@unique([propertyId, taxYear])
+  @@index([propertyId])
+  @@map("appraisal_value_history")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Property valuation providers (county record / licensed AVM / Zillow /
+// internal estimate) — see packages/types PropertyValuationProvider.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One row per (provider, retrieval) — never overwritten, so a "stale
+/// valuation cleanup" job has rows to act on and the UI can show a value's
+/// actual retrieval date rather than "now."
+model PropertyValuation {
+  id         String   @id @default(uuid())
+  propertyId String   @map("property_id")
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  providerKey         String        @map("provider_key")
+  providerPropertyId  String?       @map("provider_property_id")
+  valuationType       ValuationType @map("valuation_type")
+
+  valueCents     Int
+  lowRangeCents  Int? @map("low_range_cents")
+  highRangeCents Int? @map("high_range_cents")
+  confidence     Float?
+
+  effectiveDate DateTime? @map("effective_date")
+  retrievedAt   DateTime  @default(now()) @map("retrieved_at")
+  sourceUrl     String?   @map("source_url")
+  attributionText String? @map("attribution_text")
+  methodology     String?
+
+  licenseAllowsDisplay Boolean   @default(true) @map("license_allows_display")
+  licenseAllowsStorage Boolean   @default(true) @map("license_allows_storage")
+  expiresAt            DateTime? @map("expires_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId])
+  @@index([providerKey])
+  @@index([valuationType])
+  @@map("property_valuations")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

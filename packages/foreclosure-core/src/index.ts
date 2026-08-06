@@ -14,9 +14,21 @@ export { runExtractionPipeline } from "./extraction/pipeline";
 export type { ExtractionPipelineResult } from "./extraction/pipeline";
 
 export { resolvePropertyAddress } from "./address-resolution/resolver";
-export type { ResolutionInput } from "./address-resolution/resolver";
-export { MockAppraisalDistrictConnector } from "./address-resolution/appraisalDistrictConnector";
-export type { AppraisalDistrictConnector, AppraisalRecord } from "./address-resolution/appraisalDistrictConnector";
+export type { ResolutionInput, ResolvedAddress, ResolutionOutcome } from "./address-resolution/resolver";
+export { MockCountyAppraisalAdapter, HidalgoCountyAppraisalAdapter } from "./address-resolution/appraisalAdapter";
+export type {
+  CountyAppraisalAdapter,
+  AppraisalPropertySearchQuery,
+  AppraisalPropertyCandidate,
+  AppraisalPropertyRecord,
+  AppraisalSourceAccessMetadata,
+} from "./address-resolution/appraisalAdapter";
+export { scoreCandidates, resolveFromCandidates, getMatchThresholdsFromEnv } from "./address-resolution/scoring";
+export type { ScoringInput, ScoredCandidate, MatchThresholds } from "./address-resolution/scoring";
+export { normalizeOwnerName, ownerNamesLikelyRelated, surnamesMatch } from "./address-resolution/ownerNameNormalization";
+export type { NormalizedOwnerName } from "./address-resolution/ownerNameNormalization";
+export { parseLegalDescriptionTokens, normalizeToken, tokensOverlap } from "./address-resolution/legalDescriptionParsing";
+export type { ParsedLegalDescriptionTokens } from "./address-resolution/legalDescriptionParsing";
 
 export { estimateRemainingBalance, BALANCE_ESTIMATE_DISCLAIMER } from "./loan/balanceEstimator";
 export type { BalanceEstimateInput } from "./loan/balanceEstimator";

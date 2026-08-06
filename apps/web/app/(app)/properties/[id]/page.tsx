@@ -2,9 +2,10 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { prisma } from "@foreclosuredata/database";
 import { resolveEntitlement } from "@foreclosuredata/auth/entitlement";
-import { hasFullAccessToCounty } from "@foreclosuredata/types";
+import { hasFullAccessToCounty, type ValuationType, type PropertyValuationResult } from "@foreclosuredata/types";
 import { getCurrentProfileId } from "@/lib/supabase/server";
 import { loadFieldEvidence } from "@/lib/extracted-fields";
+import { getAllValuations } from "@/lib/valuation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ConfidenceBadge, EstimatedBadge } from "@/components/properties/confidence-badge";
@@ -12,6 +13,19 @@ import { SaveButton } from "@/components/properties/save-button";
 import { CorrectionReportForm } from "@/components/properties/correction-report-form";
 import { formatCurrencyCents, formatDate, daysUntil } from "@/lib/utils";
 import { saleStatusLabels, addressResolutionMethodLabels, fieldSourceLabels } from "@foreclosuredata/config";
+
+const VALUATION_TYPE_LABELS: Record<ValuationType, string> = {
+  county_appraised_value: "County appraised value",
+  county_market_value: "County market value",
+  zestimate: "Zestimate",
+  third_party_avm: "Licensed AVM",
+  internal_estimate: "ForeclosureData estimate",
+};
+
+// Preference order for the value equity is calculated from: the county's
+// own appraised value first (public record), falling back to our
+// disclosed internal estimate only when no county value is available.
+const EQUITY_VALUATION_PREFERENCE: ValuationType[] = ["county_appraised_value", "internal_estimate"];
 
 export default async function PropertyDetailPage({ params }: { params: { id: string } }) {
   const profileId = await getCurrentProfileId();
@@ -49,10 +63,28 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
     : false;
 
   const days = daysUntil(sale?.saleDate?.toISOString() ?? null);
+
+  const valuations = await getAllValuations({
+    propertyId: property.id,
+    streetAddress: property.propertyStreetAddress ?? undefined,
+    city: property.city ?? undefined,
+    state: property.state,
+    postalCode: property.zipCode ?? undefined,
+    county: property.county.name,
+    parcelId: property.propertyIdNumber ?? undefined,
+  });
+  const displayableValuations = valuations.filter((v) => v.licenseAllowsDisplay && (!v.expiresAt || new Date(v.expiresAt) > new Date()));
+  const zestimateValuation = displayableValuations.find((v) => v.providerKey === "zillow" && v.valuationType === "zestimate") ?? null;
+
+  const equityValuation = EQUITY_VALUATION_PREFERENCE.map((type) => displayableValuations.find((v) => v.valuationType === type)).find(Boolean) ?? null;
+  const equityBaseCents = equityValuation ? Math.round(equityValuation.value * 100) : property.appraisedValueCents;
   const equityCents =
-    property.appraisedValueCents !== null && fc.loan
-      ? property.appraisedValueCents - (fc.loan.currentPrincipalBalanceCents ?? fc.loan.estimatedRemainingBalanceCents ?? 0)
+    equityBaseCents !== null && fc.loan
+      ? equityBaseCents - (fc.loan.currentPrincipalBalanceCents ?? fc.loan.estimatedRemainingBalanceCents ?? 0)
       : null;
+
+  const rangeValues = displayableValuations.map((v) => Math.round(v.value * 100));
+  const estimatedValueRange = rangeValues.length > 0 ? { lowCents: Math.min(...rangeValues), highCents: Math.max(...rangeValues) } : null;
 
   return (
     <div className="max-w-5xl">
@@ -108,6 +140,44 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
               </Field>
               <Field label="Property type" value={property.propertyType} />
               <Field label="Address confidence"><ConfidenceBadge confidence={property.addressResolutionConfidence} /></Field>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Property values</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              {estimatedValueRange && (
+                <div className="rounded-md bg-neutral-50 p-3 text-sm dark:bg-neutral-900">
+                  <p className="font-medium text-neutral-900 dark:text-neutral-50">
+                    Estimated value range: {formatCurrencyCents(estimatedValueRange.lowCents)} – {formatCurrencyCents(estimatedValueRange.highCents)}
+                  </p>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    Combines every sourced value below that is licensed for display. Individual sources may disagree — see each card for its own
+                    methodology and confidence.
+                  </p>
+                </div>
+              )}
+
+              {(["county_appraised_value", "county_market_value", "internal_estimate"] as ValuationType[])
+                .map((type) => ({ type, valuation: displayableValuations.find((v) => v.valuationType === type) }))
+                .filter((entry) => entry.valuation)
+                .map(({ type, valuation }) => (
+                  <ValuationCard key={type} label={VALUATION_TYPE_LABELS[type]} valuation={valuation!} />
+                ))}
+
+              {zestimateValuation ? (
+                <ValuationCard label={VALUATION_TYPE_LABELS.zestimate} valuation={zestimateValuation} />
+              ) : (
+                <div className="rounded-md border border-dashed border-neutral-200 p-3 text-sm text-neutral-400 dark:border-neutral-800">
+                  Zestimate unavailable
+                </div>
+              )}
+
+              {displayableValuations
+                .filter((v) => v.valuationType === "third_party_avm")
+                .map((valuation) => (
+                  <ValuationCard key={valuation.providerKey} label={VALUATION_TYPE_LABELS.third_party_avm} valuation={valuation} />
+                ))}
             </CardContent>
           </Card>
 
@@ -196,4 +266,35 @@ function Field({ label, value, extra, children }: { label: string; value?: strin
 
 function humanizeFieldName(fieldName: string): string {
   return fieldName.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+}
+
+function ValuationCard({ label, valuation }: { label: string; valuation: PropertyValuationResult }) {
+  const isOfficialRecord = valuation.valuationType === "county_appraised_value" || valuation.valuationType === "county_market_value";
+  return (
+    <div className="rounded-md border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-medium text-neutral-900 dark:text-neutral-50">{label}</p>
+        {!isOfficialRecord && <EstimatedBadge />}
+      </div>
+      <p className="mt-1 text-lg font-semibold text-neutral-900 dark:text-neutral-50">
+        {formatCurrencyCents(Math.round(valuation.value * 100))}
+        {valuation.lowRange !== undefined && valuation.highRange !== undefined && (
+          <span className="ml-2 text-sm font-normal text-neutral-500">
+            ({formatCurrencyCents(Math.round(valuation.lowRange * 100))} – {formatCurrencyCents(Math.round(valuation.highRange * 100))})
+          </span>
+        )}
+      </p>
+      {valuation.confidence !== undefined && <ConfidenceBadge confidence={valuation.confidence} />}
+      <p className="mt-1 text-xs text-neutral-500">
+        {valuation.methodology ?? "No methodology disclosed."}
+        {valuation.effectiveDate && ` Effective ${formatDate(valuation.effectiveDate)}.`} Retrieved {formatDate(valuation.retrievedAt)}.
+      </p>
+      {valuation.attributionText && <p className="mt-1 text-xs italic text-neutral-400">{valuation.attributionText}</p>}
+      {valuation.sourceUrl && (
+        <Link href={valuation.sourceUrl} target="_blank" className="mt-1 inline-block text-xs text-brand-600 underline dark:text-brand-400">
+          View source
+        </Link>
+      )}
+    </div>
+  );
 }

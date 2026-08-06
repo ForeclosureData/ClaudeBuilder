@@ -1,143 +1,161 @@
-import type { AddressResolutionMethod, AddressResolutionResult } from "@foreclosuredata/types";
-import type { AppraisalDistrictConnector, AppraisalRecord } from "./appraisalDistrictConnector";
+import type { AppraisalPropertyCandidate, CountyAppraisalAdapter, PropertyResolutionResult } from "@foreclosuredata/types";
+import { resolveFromCandidates, type MatchThresholds, type ScoringInput } from "./scoring";
+import { normalizeOwnerName } from "./ownerNameNormalization";
 
 export interface ResolutionInput {
   statedPropertyAddress: string | null;
   statedAddressMethod: "EXPLICIT_STATED" | "COMMONLY_KNOWN_AS_PHRASE" | null;
-  legalDescription: { subdivision: string | null; lot: string | null; block: string | null; acreage: number | null } | null;
-  ownerName: string | null;
+  legalDescription: { rawText?: string | null; subdivision: string | null; lot: string | null; block: string | null; acreage: number | null } | null;
+  ownerNames: string[];
   ownerMailingAddress: string | null;
   propertyIdFromNotice: string | null;
-  geocode?: (address: string) => Promise<{ lat: number; lng: number } | null>;
+  geographicIdFromNotice: string | null;
+  city: string | null;
+}
+
+export interface ResolvedAddress {
+  addressResolutionMethod:
+    | "EXPLICIT_STATED"
+    | "COMMONLY_KNOWN_AS_PHRASE"
+    | "LEGAL_DESCRIPTION_MATCH"
+    | "PROPERTY_ID_MATCH"
+    | "GEOGRAPHIC_ID_MATCH"
+    | "OWNER_MAILING_ADDRESS_MATCH"
+    | "MULTI_FIELD_MATCH"
+    | "UNRESOLVED";
+  addressResolutionConfidence: number;
+  addressResolutionExplanation: string;
+  resolvedAddress: string | null;
+  propertyId: string | null;
+}
+
+export interface ResolutionOutcome {
+  address: ResolvedAddress;
+  resolution: PropertyResolutionResult;
+  candidates: AppraisalPropertyCandidate[];
+  selectedCandidate: AppraisalPropertyCandidate | null;
 }
 
 /**
- * Implements the 8-step resolution sequence from the product spec, in
- * order, stopping at the first step that produces a confident, unambiguous
- * match. Every path records *why* it chose (or failed to choose) an
- * address — never assumes a mailing address is the property address (step
- * 5 explicitly compares it against the situs address rather than assuming
- * equality).
+ * Orchestrates the 10-step resolution sequence from the product spec:
+ * 1-2 (explicit address / "commonly known as") are handled here directly,
+ * short-circuiting everything else. 3-9 gather candidates from the
+ * CountyAppraisalAdapter (parcel ID, geographic ID, legal description,
+ * subdivision+lot+block, owner name — in that priority) and hand them to
+ * scoring.ts, which implements the weighted evidence and auto-accept/
+ * review/margin thresholds (step 10, fuzzy scoring + manual review).
+ *
+ * Never assumes the owner's mailing address is the foreclosed property —
+ * step 9's mailing-address comparison is a low-weight corroborating
+ * signal in scoring.ts, not a resolution method on its own.
  */
 export async function resolvePropertyAddress(
   input: ResolutionInput,
-  appraisalDistrict: AppraisalDistrictConnector,
-): Promise<AddressResolutionResult & { candidates: AppraisalRecord[] }> {
-  // 1 & 2: explicit address / "commonly known as" phrase already extracted upstream.
+  appraisalAdapter: CountyAppraisalAdapter,
+  thresholds?: MatchThresholds,
+): Promise<ResolutionOutcome> {
   if (input.statedPropertyAddress && input.statedAddressMethod) {
+    const method = input.statedAddressMethod;
     return {
-      addressResolutionMethod: input.statedAddressMethod,
-      addressResolutionConfidence: input.statedAddressMethod === "EXPLICIT_STATED" ? 0.95 : 0.85,
-      addressResolutionExplanation:
-        input.statedAddressMethod === "EXPLICIT_STATED"
-          ? "The property street address was explicitly stated in the foreclosure notice."
-          : "A \"commonly known as\" phrase in the notice stated the property street address.",
-      resolvedAddress: input.statedPropertyAddress,
-      propertyId: null,
+      address: {
+        addressResolutionMethod: method,
+        addressResolutionConfidence: method === "EXPLICIT_STATED" ? 0.98 : 0.9,
+        addressResolutionExplanation:
+          method === "EXPLICIT_STATED"
+            ? "The property street address was explicitly stated in the foreclosure notice."
+            : 'A "commonly known as" phrase in the notice stated the property street address.',
+        resolvedAddress: input.statedPropertyAddress,
+        propertyId: null,
+      },
+      resolution: {
+        selectedCandidateId: null,
+        confidence: method === "EXPLICIT_STATED" ? 0.98 : 0.9,
+        resolutionMethod: "explicit_address",
+        explanation: "Address was explicitly stated in the source document; no appraisal-district lookup was needed.",
+        matchedFields: ["statedAddress"],
+        conflictingFields: [],
+        candidateCount: 0,
+        requiresManualReview: false,
+      },
       candidates: [],
+      selectedCandidate: null,
     };
   }
 
-  // 3 & 4: legal description / property-ID / subdivision+lot+block+acreage+owner match against appraisal records.
-  if (input.propertyIdFromNotice) {
-    const byId = await appraisalDistrict.findByPropertyId(input.propertyIdFromNotice);
-    if (byId) {
-      return {
-        addressResolutionMethod: "PROPERTY_ID_MATCH",
-        addressResolutionConfidence: 0.9,
-        addressResolutionExplanation: `Property ID "${input.propertyIdFromNotice}" stated in the notice matched a single appraisal district record.`,
-        resolvedAddress: byId.situsAddress,
-        propertyId: byId.propertyIdNumber,
-        candidates: [byId],
-      };
-    }
-  }
+  const candidates = await gatherCandidates(input, appraisalAdapter);
 
-  if (input.legalDescription) {
-    const legalMatches = await appraisalDistrict.findByLegalDescription(input.legalDescription);
-    if (legalMatches.length === 1) {
-      const match = legalMatches[0]!;
-      const ownerMatches = input.ownerName ? namesLikelyMatch(input.ownerName, match.ownerName) : true;
-      return {
-        addressResolutionMethod: "LEGAL_DESCRIPTION_MATCH",
-        addressResolutionConfidence: ownerMatches ? 0.93 : 0.75,
-        addressResolutionExplanation: ownerMatches
-          ? `Matched subdivision, lot, block${input.legalDescription.acreage ? ", and acreage" : ""} and owner surname to the county appraisal record.`
-          : `Matched subdivision, lot, and block to the county appraisal record, but the owner name on file did not clearly match — verify independently.`,
-        resolvedAddress: match.situsAddress,
-        propertyId: match.propertyIdNumber,
-        candidates: legalMatches,
-      };
-    }
-    if (legalMatches.length > 1) {
-      const withOwnerMatch = input.ownerName
-        ? legalMatches.filter((m) => namesLikelyMatch(input.ownerName as string, m.ownerName))
-        : [];
-      if (withOwnerMatch.length === 1) {
-        const match = withOwnerMatch[0]!;
-        return {
-          addressResolutionMethod: "LEGAL_DESCRIPTION_MATCH",
-          addressResolutionConfidence: 0.88,
-          addressResolutionExplanation:
-            "Multiple appraisal records shared the same subdivision/lot/block; the owner surname narrowed it to a single match.",
-          resolvedAddress: match.situsAddress,
-          propertyId: match.propertyIdNumber,
-          candidates: legalMatches,
-        };
-      }
-      // Multiple plausible matches, unresolved by owner name — send to manual review.
-      return {
-        addressResolutionMethod: "UNRESOLVED",
-        addressResolutionConfidence: 0.35,
-        addressResolutionExplanation:
-          "Legal description matched multiple plausible appraisal district records and the owner name did not narrow it to one — sent to manual review.",
-        resolvedAddress: null,
-        propertyId: null,
-        candidates: legalMatches,
-      };
-    }
-  }
+  const scoringInput: ScoringInput = {
+    ownerNames: input.ownerNames,
+    streetAddress: null,
+    city: input.city,
+    parcelId: input.propertyIdFromNotice,
+    geographicId: input.geographicIdFromNotice,
+    legalDescriptionRawText: input.legalDescription?.rawText ?? null,
+    subdivision: input.legalDescription?.subdivision ?? null,
+    lot: input.legalDescription?.lot ?? null,
+    block: input.legalDescription?.block ?? null,
+    acreage: input.legalDescription?.acreage ?? null,
+    ownerMailingAddress: input.ownerMailingAddress,
+  };
 
-  // 5: compare owner mailing address against situs address (never assume equal) via an owner-name lookup.
-  if (input.ownerName) {
-    const ownerMatches = await appraisalDistrict.findByOwnerName(input.ownerName);
-    if (ownerMatches.length === 1) {
-      const match = ownerMatches[0]!;
-      const mailingMatchesSitus =
-        input.ownerMailingAddress && normalizeAddress(input.ownerMailingAddress) === normalizeAddress(match.situsAddress);
-      return {
-        addressResolutionMethod: "OWNER_MAILING_ADDRESS_MATCH",
-        addressResolutionConfidence: mailingMatchesSitus ? 0.7 : 0.6,
-        addressResolutionExplanation: mailingMatchesSitus
-          ? "Owner name matched a single appraisal record whose situs address also matches the owner's mailing address (likely owner-occupied)."
-          : "Owner name matched a single appraisal district record by name only; the owner's mailing address differs from the situs address, so occupancy should not be assumed.",
-        resolvedAddress: match.situsAddress,
-        propertyId: match.propertyIdNumber,
-        candidates: ownerMatches,
-      };
-    }
-  }
+  const resolution = resolveFromCandidates(scoringInput, candidates, thresholds);
+  const selectedCandidate = resolution.selectedCandidateId
+    ? candidates.find((c) => c.sourcePropertyId === resolution.selectedCandidateId) ?? null
+    : null;
 
-  // 6: geocoding only after a probable address exists — none was found, so we do not invoke it.
-  // 7 & 8: no confident match — flag for manual review rather than guessing.
+  const methodMap: Record<PropertyResolutionResult["resolutionMethod"], ResolvedAddress["addressResolutionMethod"]> = {
+    explicit_address: "EXPLICIT_STATED",
+    parcel_id_match: "PROPERTY_ID_MATCH",
+    geographic_id_match: "GEOGRAPHIC_ID_MATCH",
+    exact_legal_description: "LEGAL_DESCRIPTION_MATCH",
+    subdivision_lot_block: "LEGAL_DESCRIPTION_MATCH",
+    multi_field_match: "MULTI_FIELD_MATCH",
+    manual: "OWNER_MAILING_ADDRESS_MATCH",
+    unresolved: "UNRESOLVED",
+  };
+
   return {
-    addressResolutionMethod: "UNRESOLVED",
-    addressResolutionConfidence: 0,
-    addressResolutionExplanation:
-      "No street address was stated in the notice, and legal-description/owner-name matching against appraisal records did not produce a confident match.",
-    resolvedAddress: null,
-    propertyId: null,
-    candidates: [],
+    address: {
+      addressResolutionMethod: methodMap[resolution.resolutionMethod],
+      addressResolutionConfidence: resolution.requiresManualReview ? 0 : resolution.confidence,
+      addressResolutionExplanation: resolution.explanation,
+      resolvedAddress: selectedCandidate?.situsAddress ?? null,
+      propertyId: selectedCandidate?.sourcePropertyId ?? null,
+    },
+    resolution,
+    candidates,
+    selectedCandidate,
   };
 }
 
-function normalizeAddress(address: string): string {
-  return address.toLowerCase().replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
-}
+/** Gathers candidates via every applicable search the adapter supports, deduped by sourcePropertyId. */
+async function gatherCandidates(input: ResolutionInput, adapter: CountyAppraisalAdapter): Promise<AppraisalPropertyCandidate[]> {
+  const byId = new Map<string, AppraisalPropertyCandidate>();
+  const add = (list: AppraisalPropertyCandidate[]) => {
+    for (const c of list) byId.set(c.sourcePropertyId, c);
+  };
 
-function namesLikelyMatch(a: string, b: string): boolean {
-  const surnameOf = (name: string) => name.toLowerCase().trim().split(/\s+/).filter(Boolean).pop() ?? "";
-  return surnameOf(a) === surnameOf(b);
-}
+  if (input.propertyIdFromNotice && adapter.capabilities.searchByParcelId) {
+    add(await adapter.searchProperties({ parcelId: input.propertyIdFromNotice }));
+  }
+  if (input.geographicIdFromNotice && adapter.capabilities.searchByParcelId) {
+    add(await adapter.searchProperties({ geographicId: input.geographicIdFromNotice }));
+  }
+  if (input.legalDescription?.subdivision && adapter.capabilities.searchBySubdivision) {
+    // Deliberately search by subdivision alone (not lot/block too) — a
+    // subdivision search should return every lot in it, so scoring.ts can
+    // both confirm an exact lot/block match *and* detect a conflicting one
+    // (a different lot in the same subdivision). Filtering by lot here
+    // would silently hide that conflict from the scorer.
+    add(await adapter.searchProperties({ subdivision: input.legalDescription.subdivision }));
+  }
+  if (input.legalDescription?.rawText && adapter.capabilities.searchByLegalDescription && byId.size === 0) {
+    add(await adapter.searchProperties({ legalDescription: input.legalDescription.rawText }));
+  }
+  if (input.ownerNames.length && adapter.capabilities.searchByOwnerName) {
+    const variants = input.ownerNames.flatMap((n) => normalizeOwnerName(n).people);
+    add(await adapter.searchProperties({ ownerNames: variants.length ? variants : input.ownerNames }));
+  }
 
-export type { AddressResolutionMethod };
+  return Array.from(byId.values());
+}

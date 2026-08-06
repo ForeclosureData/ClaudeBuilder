@@ -1,112 +1,201 @@
 import { describe, it, expect } from "vitest";
 import { resolvePropertyAddress } from "../src/address-resolution/resolver";
-import { MockAppraisalDistrictConnector, type AppraisalRecord } from "../src/address-resolution/appraisalDistrictConnector";
+import { MockCountyAppraisalAdapter } from "../src/address-resolution/appraisalAdapter";
+import type { AppraisalPropertyCandidate } from "@foreclosuredata/types";
 
-const baseRecord: AppraisalRecord = {
-  propertyIdNumber: "P-001",
-  geographicId: "G-001",
+const baseRecord: AppraisalPropertyCandidate = {
+  sourcePropertyId: "P-001",
+  sourceUrl: "https://example-fixture.local/appraisal-district/P-001",
   ownerName: "John A. Smith",
   situsAddress: "1417 N Cage Blvd, Pharr, TX 78577",
   city: "Pharr",
   zipCode: "78577",
+  parcelId: "P-001",
+  geographicId: "G-001",
+  legalDescription: "LOT 14, BLOCK 3, Sunrise Terrace Subdivision",
   subdivision: "Sunrise Terrace Subdivision",
   lot: "14",
   block: "3",
   acreage: 0.21,
+  classification: "RESIDENTIAL",
+  landValueCents: 5_000_00,
+  improvementValueCents: 13_500_00,
   appraisedValueCents: 18_500_00,
+  assessedValueCents: 18_500_00,
+  marketValueCents: 19_000_00,
+  homestead: true,
+  taxYear: 2026,
 };
 
 describe("resolvePropertyAddress", () => {
   it("prefers an explicitly stated address over any lookup", async () => {
-    const connector = new MockAppraisalDistrictConnector([baseRecord]);
+    const adapter = new MockCountyAppraisalAdapter([baseRecord]);
     const result = await resolvePropertyAddress(
       {
         statedPropertyAddress: "900 S 10th St, McAllen, TX 78501",
         statedAddressMethod: "EXPLICIT_STATED",
         legalDescription: null,
-        ownerName: null,
+        ownerNames: [],
         ownerMailingAddress: null,
         propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
       },
-      connector,
+      adapter,
     );
-    expect(result.addressResolutionMethod).toBe("EXPLICIT_STATED");
-    expect(result.addressResolutionConfidence).toBeGreaterThanOrEqual(0.9);
-    expect(result.resolvedAddress).toBe("900 S 10th St, McAllen, TX 78501");
+    expect(result.address.addressResolutionMethod).toBe("EXPLICIT_STATED");
+    expect(result.address.addressResolutionConfidence).toBeGreaterThanOrEqual(0.9);
+    expect(result.address.resolvedAddress).toBe("900 S 10th St, McAllen, TX 78501");
+    expect(result.resolution.requiresManualReview).toBe(false);
   });
 
   it("resolves via legal description + owner surname when no address is stated", async () => {
-    const connector = new MockAppraisalDistrictConnector([baseRecord]);
+    const adapter = new MockCountyAppraisalAdapter([baseRecord]);
     const result = await resolvePropertyAddress(
       {
         statedPropertyAddress: null,
         statedAddressMethod: null,
-        legalDescription: { subdivision: "Sunrise Terrace Subdivision", lot: "14", block: "3", acreage: 0.21 },
-        ownerName: "John A. Smith",
+        legalDescription: {
+          rawText: "LOT 14, BLOCK 3, Sunrise Terrace Subdivision",
+          subdivision: "Sunrise Terrace Subdivision",
+          lot: "14",
+          block: "3",
+          acreage: 0.21,
+        },
+        ownerNames: ["John A. Smith"],
         ownerMailingAddress: null,
         propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
       },
-      connector,
+      adapter,
     );
-    expect(result.addressResolutionMethod).toBe("LEGAL_DESCRIPTION_MATCH");
-    expect(result.resolvedAddress).toBe(baseRecord.situsAddress);
-    expect(result.addressResolutionConfidence).toBeGreaterThan(0.9);
+    expect(result.address.addressResolutionMethod).toBe("LEGAL_DESCRIPTION_MATCH");
+    expect(result.address.resolvedAddress).toBe(baseRecord.situsAddress);
+    expect(result.address.addressResolutionConfidence).toBeGreaterThan(0.9);
+    expect(result.resolution.requiresManualReview).toBe(false);
   });
 
   it("flags multiple plausible legal-description matches as unresolved rather than guessing", async () => {
-    const secondRecord: AppraisalRecord = { ...baseRecord, propertyIdNumber: "P-002", ownerName: "Maria Garcia", situsAddress: "2 Other St" };
-    const connector = new MockAppraisalDistrictConnector([baseRecord, secondRecord]);
+    const secondRecord: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-002", parcelId: "P-002", geographicId: "G-002", ownerName: "Maria Garcia", situsAddress: "2 Other St" };
+    const adapter = new MockCountyAppraisalAdapter([baseRecord, secondRecord]);
     const result = await resolvePropertyAddress(
       {
         statedPropertyAddress: null,
         statedAddressMethod: null,
-        legalDescription: { subdivision: "Sunrise Terrace Subdivision", lot: "14", block: "3", acreage: 0.21 },
-        ownerName: "Someone Else",
+        legalDescription: {
+          rawText: "LOT 14, BLOCK 3, Sunrise Terrace Subdivision",
+          subdivision: "Sunrise Terrace Subdivision",
+          lot: "14",
+          block: "3",
+          acreage: 0.21,
+        },
+        ownerNames: ["Someone Else"],
         ownerMailingAddress: null,
         propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
       },
-      connector,
+      adapter,
     );
-    expect(result.addressResolutionMethod).toBe("UNRESOLVED");
-    expect(result.resolvedAddress).toBeNull();
+    expect(result.address.addressResolutionMethod).toBe("UNRESOLVED");
+    expect(result.address.resolvedAddress).toBeNull();
+    expect(result.resolution.requiresManualReview).toBe(true);
     expect(result.candidates.length).toBe(2);
   });
 
   it("never assumes the owner's mailing address is the property address", async () => {
-    const connector = new MockAppraisalDistrictConnector([baseRecord]);
+    const adapter = new MockCountyAppraisalAdapter([baseRecord]);
     const result = await resolvePropertyAddress(
       {
         statedPropertyAddress: null,
         statedAddressMethod: null,
         legalDescription: null,
-        ownerName: "John A. Smith",
+        ownerNames: ["John A. Smith"],
         ownerMailingAddress: "PO Box 999, Some Other City, TX 00000",
         propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
       },
-      connector,
+      adapter,
     );
-    // Resolved via owner-name match, but confidence is lower and the
-    // explanation must not claim occupancy since the mailing address
-    // doesn't match the situs address.
-    expect(result.addressResolutionMethod).toBe("OWNER_MAILING_ADDRESS_MATCH");
-    expect(result.resolvedAddress).toBe(baseRecord.situsAddress);
-    expect(result.addressResolutionExplanation).not.toMatch(/owner-occupied/i);
+    // Owner-name-only match (no legal description, no parcel/geo ID) never
+    // clears the auto-accept threshold on its own — it should land in
+    // manual review, and the explanation must not claim occupancy since
+    // the mailing address doesn't match the situs address.
+    expect(result.resolution.requiresManualReview).toBe(true);
+    expect(result.address.addressResolutionExplanation).not.toMatch(/owner-occupied/i);
   });
 
   it("returns UNRESOLVED with zero confidence when nothing matches", async () => {
-    const connector = new MockAppraisalDistrictConnector([]);
+    const adapter = new MockCountyAppraisalAdapter([]);
     const result = await resolvePropertyAddress(
       {
         statedPropertyAddress: null,
         statedAddressMethod: null,
-        legalDescription: { subdivision: "Nonexistent", lot: "1", block: "1", acreage: null },
-        ownerName: "Nobody Here",
+        legalDescription: { rawText: "LOT 1, BLOCK 1, Nonexistent", subdivision: "Nonexistent", lot: "1", block: "1", acreage: null },
+        ownerNames: ["Nobody Here"],
         ownerMailingAddress: null,
         propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
       },
-      connector,
+      adapter,
     );
-    expect(result.addressResolutionMethod).toBe("UNRESOLVED");
-    expect(result.addressResolutionConfidence).toBe(0);
+    expect(result.address.addressResolutionMethod).toBe("UNRESOLVED");
+    expect(result.address.addressResolutionConfidence).toBe(0);
+    expect(result.resolution.requiresManualReview).toBe(true);
+  });
+
+  it("auto-accepts an exact parcel ID match even with a different owner-name spelling", async () => {
+    const adapter = new MockCountyAppraisalAdapter([baseRecord]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: null,
+        statedAddressMethod: null,
+        legalDescription: {
+          rawText: "LOT 14, BLOCK 3, Sunrise Terrace Subdivision",
+          subdivision: "Sunrise Terrace Subdivision",
+          lot: "14",
+          block: "3",
+          acreage: 0.21,
+        },
+        ownerNames: ["J. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: "P-001",
+        geographicIdFromNotice: null,
+        city: "Pharr",
+      },
+      adapter,
+    );
+    expect(result.address.addressResolutionMethod).toBe("PROPERTY_ID_MATCH");
+    expect(result.resolution.requiresManualReview).toBe(false);
+    expect(result.address.resolvedAddress).toBe(baseRecord.situsAddress);
+  });
+
+  it("routes a conflicting lot number to manual review even when the subdivision and owner both match", async () => {
+    const conflictingLot: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-003", parcelId: null, geographicId: null, lot: "99" };
+    const adapter = new MockCountyAppraisalAdapter([conflictingLot]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: null,
+        statedAddressMethod: null,
+        legalDescription: {
+          rawText: "LOT 14, BLOCK 3, Sunrise Terrace Subdivision",
+          subdivision: "Sunrise Terrace Subdivision",
+          lot: "14",
+          block: "3",
+          acreage: 0.21,
+        },
+        ownerNames: ["John A. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    expect(result.resolution.requiresManualReview).toBe(true);
+    expect(result.resolution.conflictingFields).toContain("lot");
   });
 });

@@ -7,6 +7,7 @@ const navItems = [
   { href: "/admin", label: "Overview" },
   { href: "/admin/sources", label: "County sources" },
   { href: "/admin/review-queue", label: "Review queue" },
+  { href: "/admin/property-resolution", label: "Property resolution" },
   { href: "/admin/corrections", label: "Corrections" },
 ];
 

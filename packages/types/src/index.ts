@@ -216,7 +216,9 @@ export type AddressResolutionMethod =
   | "COMMONLY_KNOWN_AS_PHRASE"
   | "LEGAL_DESCRIPTION_MATCH"
   | "PROPERTY_ID_MATCH"
+  | "GEOGRAPHIC_ID_MATCH"
   | "OWNER_MAILING_ADDRESS_MATCH"
+  | "MULTI_FIELD_MATCH"
   | "GEOCODING"
   | "MANUAL"
   | "UNRESOLVED";
@@ -227,6 +229,166 @@ export interface AddressResolutionResult {
   addressResolutionExplanation: string;
   resolvedAddress: string | null;
   propertyId: string | null;
+}
+
+// ─── County appraisal-district resolution (candidates + scoring) ────────
+
+export interface AppraisalPropertySearchQuery {
+  ownerNames?: string[];
+  streetAddress?: string;
+  city?: string;
+  postalCode?: string;
+  parcelId?: string;
+  geographicId?: string;
+  legalDescription?: string;
+  subdivision?: string;
+  lot?: string;
+  block?: string;
+  acreage?: number;
+  instrumentNumber?: string;
+}
+
+export interface AppraisalPropertyCandidate {
+  sourcePropertyId: string;
+  sourceUrl?: string;
+  ownerName: string | null;
+  situsAddress: string | null;
+  city: string | null;
+  zipCode: string | null;
+  parcelId: string | null;
+  geographicId: string | null;
+  legalDescription: string | null;
+  subdivision: string | null;
+  lot: string | null;
+  block: string | null;
+  acreage: number | null;
+  classification: "RESIDENTIAL" | "COMMERCIAL" | "UNKNOWN";
+  landValueCents: number | null;
+  improvementValueCents: number | null;
+  appraisedValueCents: number | null;
+  assessedValueCents: number | null;
+  marketValueCents: number | null;
+  homestead: boolean | null;
+  taxYear: number | null;
+}
+
+/** Full detail fetch — same shape as a candidate today; kept distinct in the interface since a real adapter's "details" call is typically a different, richer request than "search." */
+export type AppraisalPropertyRecord = AppraisalPropertyCandidate;
+
+export interface AppraisalSourceAccessMetadata {
+  officialApiAvailable: boolean;
+  bulkDataAvailable: boolean;
+  requiresManualAccess: boolean;
+  notes: string;
+}
+
+/**
+ * Provider-neutral interface for a county appraisal district data source.
+ * Implementations must only use access methods the source's own terms
+ * permit (official API, approved bulk-data file, licensed vendor feed,
+ * public-information-request import, or administrator upload/manual
+ * entry) — never CAPTCHA bypass, auth bypass, or automation prohibited by
+ * the source's terms. See HidalgoCountyAppraisalAdapter for an adapter
+ * that is intentionally a stub until its access method is documented.
+ */
+export interface CountyAppraisalAdapter {
+  countyCode: string;
+  countyName: string;
+  stateCode: string;
+  sourceName: string;
+  sourceUrl: string;
+
+  capabilities: {
+    searchByOwnerName: boolean;
+    searchByAddress: boolean;
+    searchByParcelId: boolean;
+    searchByLegalDescription: boolean;
+    searchBySubdivision: boolean;
+    searchByLotBlock: boolean;
+    searchByMap: boolean;
+    bulkDataAvailable: boolean;
+    officialApiAvailable: boolean;
+  };
+
+  searchProperties(query: AppraisalPropertySearchQuery): Promise<AppraisalPropertyCandidate[]>;
+  getPropertyDetails(sourcePropertyId: string): Promise<AppraisalPropertyRecord>;
+  getAccessMetadata(): Promise<AppraisalSourceAccessMetadata>;
+}
+
+export type PropertyResolutionMethod =
+  | "explicit_address"
+  | "parcel_id_match"
+  | "geographic_id_match"
+  | "exact_legal_description"
+  | "subdivision_lot_block"
+  | "multi_field_match"
+  | "manual"
+  | "unresolved";
+
+export interface PropertyResolutionResult {
+  selectedCandidateId: string | null;
+  confidence: number;
+  resolutionMethod: PropertyResolutionMethod;
+  explanation: string;
+  matchedFields: string[];
+  conflictingFields: string[];
+  candidateCount: number;
+  requiresManualReview: boolean;
+}
+
+// ─── Property valuation providers ─────────────────────────────────────
+
+export type ValuationType = "zestimate" | "county_appraised_value" | "county_market_value" | "third_party_avm" | "internal_estimate";
+
+export interface PropertyValuationLookupInput {
+  propertyId: string;
+  streetAddress?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  county?: string;
+  parcelId?: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+export interface PropertyValuationResult {
+  providerKey: string;
+  providerPropertyId?: string;
+  valuationType: ValuationType;
+
+  value: number;
+  currency: "USD";
+  lowRange?: number;
+  highRange?: number;
+  confidence?: number;
+  effectiveDate?: string;
+  retrievedAt: string;
+  sourceUrl?: string;
+  attributionText?: string;
+  methodology?: string;
+  licenseAllowsDisplay: boolean;
+  licenseAllowsStorage: boolean;
+  expiresAt?: string;
+}
+
+/**
+ * Provider-neutral interface for an automated-valuation-model (AVM) or
+ * official-record value source. "AVM" is the generic internal term —
+ * "Zestimate" is a Zillow trademark and must only be used for a value
+ * that actually came from ZillowAuthorizedProvider with a live,
+ * authorized connection (see apps/web/lib/valuation/zillow.ts).
+ */
+export interface PropertyValuationProvider {
+  providerKey: string;
+  displayName: string;
+
+  supportsAddressLookup: boolean;
+  supportsParcelLookup: boolean;
+  supportsCommercialUse: boolean;
+  supportsRedistribution: boolean;
+
+  getValuation(input: PropertyValuationLookupInput): Promise<PropertyValuationResult | null>;
 }
 
 // ─── Balance estimation ─────────────────────────────────────────────────
