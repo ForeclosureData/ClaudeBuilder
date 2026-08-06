@@ -785,6 +785,18 @@ async function seedRealCase(countyId: string, c: RealHidalgoCase) {
     },
   });
 
+  if (!property) {
+    await prisma.manualReviewTask.create({
+      data: {
+        sourceDocumentId: doc.id,
+        foreclosureCaseId: fc.id,
+        reason: ManualReviewReason.NO_ADDRESS_RESOLVED,
+        status: ManualReviewTaskStatus.OPEN,
+        notes: `No street address stated in the notice. Legal description: ${c.legalRawText ?? `${c.subdivision ?? "unknown subdivision"}, Lot ${c.lot ?? "?"}${c.block ? `, Block ${c.block}` : ""}`}. Owner(s): ${c.grantorNames}.`,
+      },
+    });
+  }
+
   const fields: Array<{ fieldName: string; value: string | null; sourceType: FieldSourceType; confidence: number; explicitlyStated: boolean; supportingText?: string }> = [
     { fieldName: "borrowerName", value: c.grantorNames, sourceType: FieldSourceType.FORECLOSURE_NOTICE, confidence: 0.97, explicitlyStated: true, supportingText: `Grantor(s)/Mortgagor(s): ${c.grantorNames}` },
     { fieldName: "lenderName", value: c.currentMortgagee, sourceType: FieldSourceType.FORECLOSURE_NOTICE, confidence: 0.97, explicitlyStated: true, supportingText: `Current Mortgagee/Beneficiary: ${c.currentMortgagee}` },
