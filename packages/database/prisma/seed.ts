@@ -10,6 +10,10 @@
  * against.
  */
 import { PrismaClient, PlanKey, SubscriptionStatus, PartyEntityType, PropertyType, PropertyClassification, AddressResolutionMethod, FieldSourceType, SaleStatus, CancellationStatus, DocumentType, DocumentProcessingStatus, ManualReviewStatus, OrganizationType, ManualReviewReason, ManualReviewTaskStatus, Role, CountyAvailabilityStatus, SourceAccessMethod, ConnectorHealth } from "@prisma/client";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { realHidalgoCases, type RealHidalgoCase } from "./hidalgo-real-cases";
 
 const prisma = new PrismaClient();
 
@@ -160,6 +164,35 @@ async function main() {
     },
   });
 
+  await prisma.countySource.upsert({
+    where: { id: "seed-hidalgo-real-source" },
+    update: {},
+    create: {
+      id: "seed-hidalgo-real-source",
+      countyId: hidalgo.id,
+      name: "Hidalgo County Clerk (recorded foreclosure notices)",
+      baseUrl: "https://hidalgocounty.us/232/County-Clerk",
+      adapterKey: "hidalgo",
+      isEnabled: true,
+      pollIntervalMinutes: 1440,
+      sourceVendor: "Hidalgo County Clerk's Office",
+      accessMethod: SourceAccessMethod.DIRECT_HTTP_DOWNLOAD,
+      directDownloadsAvailable: true,
+      authenticationRequired: false,
+      captchaPresent: false,
+      documentsHaveEmbeddedText: false,
+      ocrUsuallyRequired: true,
+      connectorHealth: ConnectorHealth.HEALTHY,
+      approxMonthlyNoticeVolume: 180,
+      lastSuccessfulSyncAt: new Date(),
+      noticesDiscoveredCount: realHidalgoCases.length,
+      documentsDownloadedCount: realHidalgoCases.length,
+      documentsProcessedCount: realHidalgoCases.length,
+      addressResolvedCount: realHidalgoCases.filter((c) => c.addressMethod !== "UNRESOLVED").length,
+      manualReviewCount: realHidalgoCases.filter((c) => c.manualReview).length,
+    },
+  });
+
   await prisma.dataSource.upsert({
     where: { key: "hidalgo_county_clerk" },
     update: {},
@@ -244,153 +277,20 @@ async function main() {
     },
   });
 
-  // ── Case 1: high-confidence, fully resolved, residential ────────────
-  await seedCase(hidalgo.id, {
-    caseNumber: "HID-2026-000481",
-    borrowerName: "John A. Smith",
-    grantorName: "John A. Smith",
-    ownerName: "John A. Smith",
-    lenderName: "ABC Bank, N.A.",
-    servicerName: "ABC Loan Servicing LLC",
-    trusteeName: "Patricia Reyes",
-    trusteeCompany: "Rio Grande Trustee Services",
-    address: "1417 N Cage Blvd",
-    city: "Pharr",
-    zip: "78577",
-    subdivision: "Sunrise Terrace Subdivision",
-    lot: "14",
-    block: "3",
-    acreage: 0.21,
-    propertyType: PropertyType.SINGLE_FAMILY,
-    classification: PropertyClassification.RESIDENTIAL,
-    appraisedValueCents: 18_500_00,
-    principalCents: 185_000_00,
-    loanDateISO: "2018-06-01",
-    saleDateISO: "2026-09-01",
-    saleTime: "10:00 AM",
-    saleLocation: "Hidalgo County Courthouse, 100 N Closner Blvd, Edinburg, TX (or as designated by the Commissioners Court)",
-    resolutionMethod: AddressResolutionMethod.LEGAL_DESCRIPTION_MATCH,
-    resolutionConfidence: 0.93,
-    resolutionExplanation:
-      "Matched subdivision, lot, block, owner surname, and acreage to the county appraisal record.",
-    extractionConfidence: 0.9,
-    manualReview: false,
-    ownerOccupied: true,
-    homestead: true,
-    currentBalanceStatedCents: null,
-  });
+  // ── Hidalgo foreclosure cases: real, not fictional ──────────────────
+  // These 82 cases come from real Hidalgo County-recorded foreclosure
+  // notices (2026), manually transcribed from the source PDFs bundled at
+  // apps/web/public/hidalgo-source-docs/. Every deploy wipes and rebuilds
+  // this county's case tree from realHidalgoCases so the seed script is
+  // idempotent (earlier revisions of this file re-created fictional demo
+  // cases on every `db:seed` run, which is why production accumulated many
+  // duplicates before this rewrite).
+  await wipeHidalgoCases(hidalgo.id);
+  for (const c of realHidalgoCases) {
+    await seedRealCase(hidalgo.id, c);
+  }
 
-  // ── Case 2: stated current balance, commercial, medium confidence ──
-  await seedCase(hidalgo.id, {
-    caseNumber: "HID-2026-000502",
-    borrowerName: "Rio Valley Holdings LLC",
-    grantorName: "Rio Valley Holdings LLC",
-    ownerName: "Rio Valley Holdings LLC",
-    lenderName: "Frontera Community Bank",
-    servicerName: "Frontera Community Bank",
-    trusteeName: "Marco Villareal",
-    trusteeCompany: "Villareal Trustee Group",
-    address: "2210 W Business 83",
-    city: "McAllen",
-    zip: "78501",
-    subdivision: "McAllen Commercial Plat",
-    lot: "6",
-    block: "1",
-    acreage: 0.85,
-    propertyType: PropertyType.COMMERCIAL,
-    classification: PropertyClassification.COMMERCIAL,
-    appraisedValueCents: 62_000_00,
-    principalCents: 410_000_00,
-    loanDateISO: "2021-03-15",
-    saleDateISO: "2026-09-01",
-    saleTime: "10:00 AM",
-    saleLocation: "Hidalgo County Courthouse, 100 N Closner Blvd, Edinburg, TX (or as designated by the Commissioners Court)",
-    resolutionMethod: AddressResolutionMethod.EXPLICIT_STATED,
-    resolutionConfidence: 0.98,
-    resolutionExplanation:
-      "Street address was explicitly stated in the foreclosure notice under a \"commonly known as\" clause.",
-    extractionConfidence: 0.86,
-    manualReview: false,
-    ownerOccupied: false,
-    homestead: false,
-    currentBalanceStatedCents: 372_450_00,
-  });
-
-  // ── Case 3: low confidence / manual review, conflicting names ───────
-  await seedCase(hidalgo.id, {
-    caseNumber: "HID-2026-000517",
-    borrowerName: "Maria G. Longoria",
-    grantorName: "Maria G. Longoria-Cantu",
-    ownerName: "Maria G. Longoria",
-    lenderName: "Valley Trust Mortgage Co.",
-    servicerName: "Valley Trust Mortgage Co.",
-    trusteeName: "Substitute Trustee (name illegible in scan)",
-    trusteeCompany: "South Texas Trustee Services",
-    address: null,
-    city: "Weslaco",
-    zip: null,
-    subdivision: "Las Palmas Estates",
-    lot: "22",
-    block: null,
-    acreage: null,
-    propertyType: PropertyType.UNKNOWN,
-    classification: PropertyClassification.UNKNOWN,
-    appraisedValueCents: null,
-    principalCents: 142_000_00,
-    loanDateISO: "2016-11-20",
-    saleDateISO: "2026-09-01",
-    saleTime: "10:00 AM",
-    saleLocation: "Hidalgo County Courthouse, 100 N Closner Blvd, Edinburg, TX (or as designated by the Commissioners Court)",
-    resolutionMethod: AddressResolutionMethod.UNRESOLVED,
-    resolutionConfidence: 0.35,
-    resolutionExplanation:
-      "Legal description matched two plausible appraisal records with different street addresses in the same subdivision; borrower name on the notice does not exactly match the appraisal district owner name.",
-    extractionConfidence: 0.42,
-    manualReview: true,
-    manualReviewReason: ManualReviewReason.BORROWER_NAME_CONFLICT,
-    ownerOccupied: null,
-    homestead: null,
-    currentBalanceStatedCents: null,
-  });
-
-  // ── Case 4: canceled sale ────────────────────────────────────────────
-  await seedCase(hidalgo.id, {
-    caseNumber: "HID-2026-000455",
-    borrowerName: "Robert & Linda Garza",
-    grantorName: "Robert Garza",
-    ownerName: "Robert & Linda Garza",
-    lenderName: "Southland Mortgage Corp.",
-    servicerName: "Southland Loan Servicing",
-    trusteeName: "James Whitfield",
-    trusteeCompany: "Whitfield & Associates Trustee Services",
-    address: "614 E 5th St",
-    city: "Mission",
-    zip: "78572",
-    subdivision: "Mission Original Townsite",
-    lot: "9",
-    block: "12",
-    acreage: 0.18,
-    propertyType: PropertyType.SINGLE_FAMILY,
-    classification: PropertyClassification.RESIDENTIAL,
-    appraisedValueCents: 15_200_00,
-    principalCents: 128_000_00,
-    loanDateISO: "2015-02-10",
-    saleDateISO: "2026-08-04",
-    saleTime: "10:00 AM",
-    saleLocation: "Hidalgo County Courthouse, 100 N Closner Blvd, Edinburg, TX (or as designated by the Commissioners Court)",
-    resolutionMethod: AddressResolutionMethod.PROPERTY_ID_MATCH,
-    resolutionConfidence: 0.88,
-    resolutionExplanation:
-      "Property ID stated in the deed-of-trust reference matched a single appraisal district record.",
-    extractionConfidence: 0.81,
-    manualReview: false,
-    ownerOccupied: true,
-    homestead: true,
-    currentBalanceStatedCents: null,
-    canceled: true,
-  });
-
-  console.log("Seed complete.");
+  console.log(`Seed complete. ${realHidalgoCases.length} real Hidalgo cases loaded.`);
 }
 
 interface SeedCaseInput {
@@ -670,6 +570,252 @@ function buildSummary(input: SeedCaseInput): string {
       : `The property address was matched using ${input.resolutionMethod.toLowerCase().replaceAll("_", " ")}.`;
 
   return `This ${propertyKind} ${addressPart} is scheduled for foreclosure sale on ${input.saleDateISO}. The notice identifies ${input.borrowerName} as the borrower and ${input.lenderName} as the mortgagee. The original deed of trust was recorded around ${input.loanDateISO} with an original principal amount of $${(input.principalCents / 100).toLocaleString()}. ${balancePart} ${resolutionPart}`;
+}
+
+/**
+ * Deletes every existing Hidalgo case, document, and party record before
+ * reseeding. Runs on every `db:seed` invocation (every deploy, per
+ * netlify.toml) so seeding real cases is idempotent instead of
+ * accumulating duplicates the way the old fictional-data seedCase() calls
+ * did across dozens of prior deploys. Person/Organization/Trustee are
+ * wiped unconditionally because nothing else in this seed file creates
+ * them.
+ */
+async function wipeHidalgoCases(countyId: string) {
+  await prisma.manualReviewTask.deleteMany({ where: { foreclosureCase: { countyId } } });
+  await prisma.extractedField.deleteMany({ where: { sourceDocument: { countyId } } });
+  await prisma.correctionReport.deleteMany({ where: { foreclosureCase: { countyId } } });
+  await prisma.foreclosureCase.deleteMany({ where: { countyId } });
+  await prisma.sourceDocument.deleteMany({ where: { countyId } });
+  await prisma.property.deleteMany({ where: { countyId } });
+  await prisma.trustee.deleteMany({});
+  await prisma.person.deleteMany({});
+  await prisma.organization.deleteMany({});
+}
+
+function hashSourceDocument(pdfFilename: string): string {
+  try {
+    const pdfPath = join(__dirname, "../../../apps/web/public/hidalgo-source-docs", pdfFilename);
+    return createHash("sha256").update(readFileSync(pdfPath)).digest("hex");
+  } catch {
+    console.warn(`Could not read ${pdfFilename} to hash; falling back to filename-derived hash.`);
+    return createHash("sha256").update(`hidalgo-source-docs/${pdfFilename}`).digest("hex");
+  }
+}
+
+const REAL_ADDRESS_METHOD: Record<RealHidalgoCase["addressMethod"], AddressResolutionMethod> = {
+  EXPLICIT_STATED: AddressResolutionMethod.EXPLICIT_STATED,
+  COMMONLY_KNOWN_AS_PHRASE: AddressResolutionMethod.COMMONLY_KNOWN_AS_PHRASE,
+  UNRESOLVED: AddressResolutionMethod.UNRESOLVED,
+};
+
+const REAL_CLASSIFICATION: Record<RealHidalgoCase["classification"], PropertyClassification> = {
+  RESIDENTIAL: PropertyClassification.RESIDENTIAL,
+  COMMERCIAL: PropertyClassification.COMMERCIAL,
+  UNKNOWN: PropertyClassification.UNKNOWN,
+};
+
+async function seedRealCase(countyId: string, c: RealHidalgoCase) {
+  const grantor = await prisma.person.create({ data: { fullName: c.grantorNames } });
+
+  const currentOrg = await prisma.organization.create({
+    data: { name: c.currentMortgagee, type: OrganizationType.LENDER },
+  });
+  const originalOrg =
+    c.origMortgagee === null || c.origMortgagee === c.currentMortgagee
+      ? currentOrg
+      : await prisma.organization.create({ data: { name: c.origMortgagee, type: OrganizationType.LENDER } });
+  const servicerOrg =
+    c.servicerName === null || c.servicerName === c.currentMortgagee
+      ? currentOrg
+      : await prisma.organization.create({ data: { name: c.servicerName, type: OrganizationType.SERVICER } });
+
+  const addressMethod = REAL_ADDRESS_METHOD[c.addressMethod];
+  const resolutionConfidence = c.addressMethod === "EXPLICIT_STATED" ? 0.98 : c.addressMethod === "COMMONLY_KNOWN_AS_PHRASE" ? 0.9 : null;
+  const resolutionExplanation =
+    c.addressMethod === "EXPLICIT_STATED"
+      ? "Street address was explicitly stated in the foreclosure notice."
+      : c.addressMethod === "COMMONLY_KNOWN_AS_PHRASE"
+        ? 'Street address was given in the notice under a "commonly known as" clause.'
+        : "The notice gave only a legal description (subdivision/lot/block or metes-and-bounds), with no street address stated, and it was not cross-referenced against appraisal district records.";
+
+  let property = null;
+  if (addressMethod !== AddressResolutionMethod.UNRESOLVED) {
+    property = await prisma.property.create({
+      data: {
+        countyId,
+        propertyStreetAddress: c.address,
+        city: c.city,
+        zipCode: c.zip,
+        subdivision: c.subdivision,
+        lot: c.lot,
+        block: c.block,
+        propertyType: PropertyType.UNKNOWN,
+        classification: REAL_CLASSIFICATION[c.classification],
+        addressResolutionMethod: addressMethod,
+        addressResolutionConfidence: resolutionConfidence,
+        addressResolutionExplanation: resolutionExplanation,
+      },
+    });
+  }
+
+  const fc = await prisma.foreclosureCase.create({
+    data: {
+      countyId,
+      propertyId: property?.id,
+      caseNumber: `HID-${c.docNumber}`,
+      status: SaleStatus.SCHEDULED,
+      entityType: c.entityType === "ENTITY" ? PartyEntityType.ENTITY : PartyEntityType.INDIVIDUAL,
+      borrowerPersonId: grantor.id,
+      grantorPersonId: grantor.id,
+      currentOwnerPersonId: grantor.id,
+      summaryText: buildRealSummary(c),
+      lastVerifiedAt: new Date(),
+    },
+  });
+
+  const doc = await prisma.sourceDocument.create({
+    data: {
+      countyId,
+      countySourceId: "seed-hidalgo-real-source",
+      foreclosureCaseId: fc.id,
+      sourceUrl: "https://hidalgocounty.us/232/County-Clerk",
+      documentUrl: `/hidalgo-source-docs/${c.pdfFilename}`,
+      filename: c.pdfFilename,
+      countyFilingNumber: c.docNumber,
+      filingDate: c.dotDateISO ? new Date(c.dotDateISO) : null,
+      documentType: DocumentType.NOTICE_OF_TRUSTEE_SALE,
+      dateCollected: new Date(),
+      sha256Hash: hashSourceDocument(c.pdfFilename),
+      extractionConfidence: c.manualReview ? 0.6 : 0.95,
+      manualReviewStatus: c.manualReview ? ManualReviewStatus.PENDING : ManualReviewStatus.NOT_NEEDED,
+      status: DocumentProcessingStatus.SUMMARIZED,
+      ocrUsed: true,
+      processingCostCents: 0,
+    },
+  });
+
+  await prisma.foreclosureSale.create({
+    data: {
+      foreclosureCaseId: fc.id,
+      sourceDocumentId: doc.id,
+      saleDate: new Date(c.saleDateISO),
+      saleTime: c.saleTime,
+      saleLocation: c.saleLocation,
+      earliestSaleDate: new Date(c.saleDateISO),
+      saleStatus: SaleStatus.SCHEDULED,
+      cancellationStatus: CancellationStatus.NOT_CANCELED,
+    },
+  });
+
+  await prisma.loan.create({
+    data: {
+      foreclosureCaseId: fc.id,
+      originalLenderOrgId: originalOrg.id,
+      currentMortgageeOrgId: currentOrg.id,
+      mortgageServicerOrgId: servicerOrg.id,
+      originalPrincipalAmountCents: c.principalCents,
+      deedOfTrustDate: c.dotDateISO ? new Date(c.dotDateISO) : null,
+      instrumentNumber: c.instrumentNumber,
+      recordingDate: c.dotDateISO ? new Date(c.dotDateISO) : null,
+    },
+  });
+
+  if (property) {
+    await prisma.propertyAddress.create({
+      data: {
+        foreclosureCaseId: fc.id,
+        propertyId: property.id,
+        rawAddressText: c.address ?? `${c.subdivision ?? "Unknown subdivision"}, Lot ${c.lot ?? "?"}${c.block ? `, Block ${c.block}` : ""}`,
+        method: addressMethod,
+        confidence: resolutionConfidence ?? 0,
+        explanation: resolutionExplanation,
+        isSelected: true,
+      },
+    });
+  }
+
+  await prisma.legalDescription.create({
+    data: {
+      foreclosureCaseId: fc.id,
+      sourceDocumentId: doc.id,
+      rawText: c.legalRawText ?? `Legal description not separately transcribed from this notice (see original document, Instrument No. ${c.instrumentNumber ?? "unknown"}, Hidalgo County real property records).`,
+      subdivision: c.subdivision,
+      lot: c.lot,
+      block: c.block,
+    },
+  });
+
+  const fields: Array<{ fieldName: string; value: string | null; sourceType: FieldSourceType; confidence: number; explicitlyStated: boolean; supportingText?: string }> = [
+    { fieldName: "borrowerName", value: c.grantorNames, sourceType: FieldSourceType.FORECLOSURE_NOTICE, confidence: 0.97, explicitlyStated: true, supportingText: `Grantor(s)/Mortgagor(s): ${c.grantorNames}` },
+    { fieldName: "lenderName", value: c.currentMortgagee, sourceType: FieldSourceType.FORECLOSURE_NOTICE, confidence: 0.97, explicitlyStated: true, supportingText: `Current Mortgagee/Beneficiary: ${c.currentMortgagee}` },
+    { fieldName: "saleDate", value: c.saleDateISO, sourceType: FieldSourceType.FORECLOSURE_NOTICE, confidence: 0.98, explicitlyStated: true, supportingText: `Date of Sale: ${c.saleDateISO}` },
+  ];
+  if (c.principalCents !== null) {
+    fields.push({
+      fieldName: "originalPrincipalAmount",
+      value: String(c.principalCents / 100),
+      sourceType: FieldSourceType.FORECLOSURE_NOTICE,
+      confidence: 0.95,
+      explicitlyStated: true,
+      supportingText: `Original principal amount of $${(c.principalCents / 100).toLocaleString()}`,
+    });
+  }
+  if (property && c.address) {
+    fields.push({
+      fieldName: "propertyStreetAddress",
+      value: c.address,
+      sourceType: FieldSourceType.FORECLOSURE_NOTICE,
+      confidence: resolutionConfidence ?? 0.9,
+      explicitlyStated: true,
+      supportingText: resolutionExplanation,
+    });
+  }
+  for (const f of fields) {
+    await prisma.extractedField.create({
+      data: {
+        sourceDocumentId: doc.id,
+        entityType: "ForeclosureCase",
+        entityId: fc.id,
+        fieldName: f.fieldName,
+        value: f.value,
+        sourceType: f.sourceType,
+        confidence: f.confidence,
+        explicitlyStated: f.explicitlyStated,
+        supportingText: f.supportingText,
+        pageNumber: 1,
+        verifiedAt: new Date(),
+      },
+    });
+  }
+
+  if (c.manualReview) {
+    await prisma.manualReviewTask.create({
+      data: {
+        sourceDocumentId: doc.id,
+        foreclosureCaseId: fc.id,
+        reason: ManualReviewReason.POOR_TEXT_QUALITY,
+        status: ManualReviewTaskStatus.OPEN,
+        notes: c.dataQualityNote ?? "Flagged during manual transcription for review.",
+      },
+    });
+  }
+}
+
+function buildRealSummary(c: RealHidalgoCase): string {
+  const addressPart = c.address
+    ? `located at ${c.address}${c.city ? `, ${c.city}, TX` : ", TX"}`
+    : c.subdivision
+      ? `in the ${c.subdivision}${c.city ? ` area of ${c.city}, TX` : " area"} (no street address stated in the notice)`
+      : "with no street address or subdivision stated in the notice";
+  const principalPart =
+    c.principalCents !== null
+      ? `The notice states an original principal amount of $${(c.principalCents / 100).toLocaleString()}.`
+      : "The notice does not state an original principal amount.";
+  const dotPart = c.dotDateISO ? `The Deed of Trust is dated ${c.dotDateISO}${c.instrumentNumber ? `, Instrument No. ${c.instrumentNumber}` : ""}.` : "";
+  const notePart = c.dataQualityNote ? ` ${c.dataQualityNote}` : "";
+
+  return `Real Hidalgo County foreclosure notice: this property ${addressPart} is scheduled for foreclosure sale on ${c.saleDateISO}. The notice identifies ${c.grantorNames} as the grantor/mortgagor and ${c.currentMortgagee} as the current mortgagee. ${dotPart} ${principalPart}${notePart}`.replace(/\s+/g, " ").trim();
 }
 
 main()
