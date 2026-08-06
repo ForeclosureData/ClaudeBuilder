@@ -4,7 +4,11 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RequestCountyForm } from "@/components/search/request-county-form";
 
-export const revalidate = 300;
+// Deliberately force-dynamic rather than ISR: with `revalidate`, Next.js
+// executes this page during `next build` itself to seed the initial cache,
+// coupling the build to a working database connection for no real benefit
+// on a page this cheap to render per-request.
+export const dynamic = "force-dynamic";
 
 /** The only place that should ever claim statewide coverage is this page — and only once it's true. */
 export default async function CountiesPage() {

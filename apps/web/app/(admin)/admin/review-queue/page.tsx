@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/properties/empty-state";
 
+export const dynamic = "force-dynamic";
+
 async function resolveTask(taskId: string) {
   "use server";
   const actorId = await getCurrentProfileId();

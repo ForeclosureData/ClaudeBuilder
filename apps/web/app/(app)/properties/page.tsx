@@ -13,6 +13,8 @@ import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/table";
 import { formatCurrencyCents, formatDate, daysUntil } from "@/lib/utils";
 import { saleStatusLabels } from "@foreclosuredata/config";
 
+export const dynamic = "force-dynamic";
+
 const PAGE_SIZE = 25;
 
 /**

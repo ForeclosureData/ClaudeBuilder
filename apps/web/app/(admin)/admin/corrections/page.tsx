@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/properties/empty-state";
 import { formatDate } from "@/lib/utils";
 
+export const dynamic = "force-dynamic";
+
 async function updateStatus(reportId: string, status: "REVIEWED" | "APPLIED" | "REJECTED") {
   "use server";
   const actorId = await getCurrentProfileId();

@@ -5,6 +5,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
+export const dynamic = "force-dynamic";
+
 async function toggleSource(sourceId: string, enable: boolean) {
   "use server";
   const actorId = await getCurrentProfileId();

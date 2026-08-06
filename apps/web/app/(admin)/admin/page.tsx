@@ -2,6 +2,8 @@ import { prisma } from "@foreclosuredata/database";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatCurrencyCents } from "@/lib/utils";
 
+export const dynamic = "force-dynamic";
+
 export default async function AdminOverviewPage() {
   const [
     countySources,
