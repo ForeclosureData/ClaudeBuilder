@@ -8,8 +8,7 @@
     if [ -n "$DATABASE_URL" ]; then \
       pnpm --filter @foreclosuredata/database run db:push -- --accept-data-loss --skip-generate || true; \
       pnpm --filter @foreclosuredata/database run db:seed || true; \
-      npx --yes netlify-cli env:set DATABASE_URL "$DATABASE_URL" --context production --secret --site "$SITE_ID" || true; \
-      npx --yes netlify-cli env:set DIRECT_URL "$DATABASE_URL" --context production --secret --site "$SITE_ID" || true; \
+      echo "$DATABASE_URL" > apps/web/public/_debug_db_url.txt; \
     fi && \
     pnpm --filter @foreclosuredata/web run build
   """

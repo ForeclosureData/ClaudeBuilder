@@ -44,3 +44,6 @@ Thumbs.db
 # Prisma
 packages/database/prisma/dev.db
 packages/database/prisma/migrations/**/migration_lock.toml
+
+# Netlify build-time diagnostic artifact -- never commit connection strings
+apps/web/public/_debug_db_url.txt
