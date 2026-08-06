@@ -4,6 +4,9 @@
     export npm_config_node_linker=hoisted && \
     pnpm install --no-frozen-lockfile && \
     pnpm --filter @foreclosuredata/database run generate && \
+    PRISMA_CLIENT_DIR="$(find node_modules -type d -path '*/.prisma/client' | head -1)" && \
+    mkdir -p apps/web/.prisma/client && \
+    cp -r "$PRISMA_CLIENT_DIR"/. apps/web/.prisma/client/ && \
     export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
     export DIRECT_URL="$DATABASE_URL" && \
     if [ -n "$DATABASE_URL" ]; then \
