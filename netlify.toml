@@ -19,6 +19,9 @@
     echo "--- POST-DB-PUSH PRISMA CLIENT DIAGNOSTIC ---" && \
     (grep -c appraisalPropertyCandidate node_modules/.prisma/client/index.d.ts || echo "MISSING in node_modules/.prisma/client/index.d.ts") && \
     echo "--- END DIAGNOSTIC ---" && \
+    echo "--- BARE TSC DIAGNOSTIC (apps/web) ---" && \
+    (pnpm --filter @foreclosuredata/web exec tsc --noEmit -p . && echo "BARE TSC PASSED" || echo "BARE TSC FAILED") && \
+    echo "--- END BARE TSC DIAGNOSTIC ---" && \
     pnpm --filter @foreclosuredata/web run build
   """
 
