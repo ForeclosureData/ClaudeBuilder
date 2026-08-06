@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "turbo": "^2.0.9",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "prisma": "^5.17.0"
   }
 }
