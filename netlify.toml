@@ -1,0 +1,20 @@
+[build]
+  publish = "apps/web/.next"
+  command = """
+    pnpm install --no-frozen-lockfile && \
+    pnpm --filter @foreclosuredata/database run generate && \
+    export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
+    export DIRECT_URL="$DATABASE_URL" && \
+    if [ -n "$DATABASE_URL" ]; then \
+      pnpm --filter @foreclosuredata/database run db:push -- --accept-data-loss --skip-generate && \
+      pnpm --filter @foreclosuredata/database run db:seed; \
+    fi && \
+    pnpm --filter @foreclosuredata/web run build
+  """
+
+[build.environment]
+  NODE_VERSION = "20"
+  BILLING_PROVIDER = "mock"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

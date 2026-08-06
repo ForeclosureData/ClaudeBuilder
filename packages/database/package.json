@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@netlify/database": "^1.0.0",
     "@prisma/client": "^5.17.0"
   },
   "devDependencies": {
