@@ -1,6 +1,7 @@
 [build]
   publish = "apps/web/.next"
   command = """
+    rm -rf node_modules apps/web/node_modules packages/*/node_modules && \
     pnpm install --no-frozen-lockfile && \
     pnpm --filter @foreclosuredata/database run generate && \
     export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
