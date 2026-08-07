@@ -18,6 +18,12 @@ const MARKET_ADJUSTMENT_FACTOR = 1.08;
  * same "estimate, not a fact, always disclosed" pattern as
  * estimateRemainingBalance(). Must never be labeled a Zestimate or any
  * third-party AVM name.
+ *
+ * Not part of the MVP: this class is not registered by
+ * apps/web/lib/valuation/index.ts's getValuationProviders(). The MVP
+ * explicitly does not fabricate a value to fill a gap when the county has
+ * none — when county data is missing, the UI shows "County value
+ * unavailable" instead of falling back to this estimate.
  */
 export class InternalComparableEstimateProvider implements PropertyValuationProvider {
   providerKey = "internal_estimate";

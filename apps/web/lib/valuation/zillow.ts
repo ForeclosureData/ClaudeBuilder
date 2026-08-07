@@ -12,6 +12,12 @@ import type { PropertyValuationProvider, PropertyValuationLookupInput, PropertyV
  * While ZILLOW_API_ENABLED is unset or "false" (the default),
  * getValuation() returns null immediately — no HTTP call is reachable,
  * by construction, from this code path.
+ *
+ * Not part of the MVP: this class is not registered by
+ * apps/web/lib/valuation/index.ts's getValuationProviders(). The MVP
+ * valuation strategy uses county appraisal records only — Zillow stays
+ * out of the active provider list (not just disabled by env flag) until a
+ * product decision to re-add it, on top of real API access.
  */
 export class ZillowAuthorizedProvider implements PropertyValuationProvider {
   providerKey = "zillow";

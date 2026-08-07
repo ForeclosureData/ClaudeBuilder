@@ -1,34 +1,27 @@
 import type { PropertyValuationProvider, PropertyValuationLookupInput, PropertyValuationResult } from "@foreclosuredata/types";
 import { MockValuationProvider } from "./mock";
-import { CountyAppraisalValueProvider } from "./countyAppraisal";
-import { InternalComparableEstimateProvider } from "./internalEstimate";
-import { LicensedThirdPartyAvmProvider } from "./thirdPartyAvm";
-import { ZillowAuthorizedProvider } from "./zillow";
+import { CountyMarketValueProvider, CountyAppraisedValueProvider } from "./countyAppraisal";
 
 let cached: PropertyValuationProvider[] | null = null;
 
 /**
- * Every valuation provider whose data is safe to query in the current
- * environment: county appraisal + internal estimate are always on
- * (public record / disclosed methodology); mock is added outside
- * production so dev/test always has something to render; third-party AVM
- * and Zillow are only included once their respective *_ENABLED flags are
- * true (both still return null internally until real credentials exist).
- * Never call a provider SDK/HTTP client outside this module.
+ * MVP valuation strategy: the county appraisal district (public tax-roll
+ * record) is the only active property-value source. Zillow (zillow.ts), a
+ * licensed third-party AVM (thirdPartyAvm.ts), and ForeclosureData's own
+ * internal comparable estimate (internalEstimate.ts) all have working
+ * provider implementations but are deliberately NOT registered here —
+ * none of them may block the Hidalgo pilot, and none may be fabricated to
+ * fill a gap when the county has no value. Re-add them to this list only
+ * once there's a real product decision plus (for Zillow/AVM) authorized
+ * credentials and commercial display rights.
  */
 export function getValuationProviders(): PropertyValuationProvider[] {
   if (cached) return cached;
 
-  const providers: PropertyValuationProvider[] = [new CountyAppraisalValueProvider(), new InternalComparableEstimateProvider()];
+  const providers: PropertyValuationProvider[] = [new CountyMarketValueProvider(), new CountyAppraisedValueProvider()];
 
   if (process.env.NODE_ENV !== "production") {
     providers.push(new MockValuationProvider());
-  }
-  if ((process.env.THIRD_PARTY_AVM_ENABLED ?? "false").toLowerCase() === "true") {
-    providers.push(new LicensedThirdPartyAvmProvider());
-  }
-  if ((process.env.ZILLOW_API_ENABLED ?? "false").toLowerCase() === "true") {
-    providers.push(new ZillowAuthorizedProvider());
   }
 
   cached = providers;

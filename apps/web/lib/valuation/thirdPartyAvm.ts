@@ -7,6 +7,10 @@ import type { PropertyValuationProvider, PropertyValuationLookupInput, PropertyV
  * getValuation() only after a commercial agreement and display/storage
  * license terms exist; gate it behind THIRD_PARTY_AVM_ENABLED the same
  * way zillow.ts gates ZILLOW_API_ENABLED.
+ *
+ * Not part of the MVP: this class is not registered by
+ * apps/web/lib/valuation/index.ts's getValuationProviders(). The MVP
+ * valuation strategy uses county appraisal records only.
  */
 export class LicensedThirdPartyAvmProvider implements PropertyValuationProvider {
   providerKey = "third_party_avm";
