@@ -514,8 +514,47 @@ model County {
   subscriptions    Subscription[]
   requests         CountyRequest[]
   resolvedLegalDescriptionMatches ResolvedLegalDescriptionMatch[]
+  ingestedNoticeBundles IngestedNoticeBundle[]
 
   @@map("counties")
+}
+
+/// Tracks a single bundled-document posting (e.g. Hidalgo's monthly
+/// consolidated "PROPERTY SALE" PDF) discovered by a county adapter's
+/// discoverNotices(), independent of the individual notices it contains
+/// once split. Lets the ingestion job skip re-downloading/re-splitting an
+/// unchanged bundle on every poll, while still noticing when the county
+/// republishes a posting with a different sha256 (revision/amendment).
+model IngestedNoticeBundle {
+  id         String @id @default(uuid())
+  countyId   String @map("county_id")
+  county     County @relation(fields: [countyId], references: [id], onDelete: Cascade)
+  adapterKey String @map("adapter_key")
+  externalId String @map("external_id")
+
+  sourceUrl         String                @map("source_url")
+  documentUrl       String                @map("document_url")
+  bundleSha256      String?               @map("bundle_sha256")
+  noticeCount       Int?                  @map("notice_count")
+  splitSuccessCount Int?                  @map("split_success_count")
+  status            IngestedBundleStatus  @default(DISCOVERED)
+  errorMessage      String?               @map("error_message")
+
+  discoveredAt  DateTime  @default(now()) @map("discovered_at")
+  processedAt   DateTime? @map("processed_at")
+  lastCheckedAt DateTime  @default(now()) @map("last_checked_at")
+
+  @@unique([countyId, adapterKey, externalId])
+  @@index([status])
+  @@map("ingested_notice_bundles")
+}
+
+enum IngestedBundleStatus {
+  DISCOVERED
+  DOWNLOADING
+  SPLITTING
+  SPLIT_COMPLETE
+  FAILED
 }
 
 /// A county a visitor asked us to add — the primary demand signal feeding

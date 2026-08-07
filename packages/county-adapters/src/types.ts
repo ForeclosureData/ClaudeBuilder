@@ -34,4 +34,30 @@ export interface CountyForeclosureAdapter {
 
   /** Optional: cheap metadata an adapter can read without a full extraction pass (e.g. a posting-index page's own columns). */
   parseMetadata?(notice: DiscoveredNotice): Promise<Record<string, unknown>>;
+
+  /**
+   * Optional: for adapters whose downloadNotice() returns a bundle
+   * containing multiple individual notices (e.g. a county's monthly
+   * consolidated PDF), split it into one entry per notice. When a county
+   * adapter omits this, the downloaded document IS a single notice.
+   * Bundle-splitting logic belongs entirely inside the county's own adapter
+   * directory — the worker/ingestion pipeline only knows "call this if it
+   * exists, then treat each result as its own notice."
+   */
+  splitBundle?(downloaded: DownloadedNotice): Promise<BundledNotice[]>;
+}
+
+export interface BundledNotice {
+  /** Stable identifier for dedup, unique within the bundle (and, combined with the parent's externalId, globally unique). */
+  externalId: string;
+  countyFilingNumber: string | null;
+  filingDate: Date | null;
+  documentTypeHint: string | null;
+  /** Plain-text content of this individual notice, ready for the extraction pipeline. */
+  noticeText: string;
+  /** A standalone PDF containing just this notice's pages, if the adapter can produce one — used for storage/provenance links. */
+  fileBuffer: Buffer | null;
+  contentType: string;
+  /** True when the adapter itself flagged this split as low-confidence (e.g. thin/garbled transcription) — callers should weight this into manual-review decisions. */
+  lowConfidence: boolean;
 }

@@ -1,3 +1,6 @@
-export type { CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice } from "./types";
+export type { CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice, BundledNotice } from "./types";
 export { getCountyAdapter, listCountyAdapters } from "./registry";
-export { hidalgoAdapter } from "./hidalgo/adapter";
+export { hidalgoAdapter, splitHidalgoBundle, discoverPropertySalePostings } from "./hidalgo/adapter";
+export type { SplitBundleResult, SplitNotice } from "./hidalgo/adapter";
+export type { HidalgoPropertySalePosting } from "./hidalgo/adapter";
+export { hidalgoFixtureAdapter } from "./hidalgo/fixtureAdapter";

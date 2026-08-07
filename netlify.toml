@@ -31,7 +31,11 @@
   BILLING_PROVIDER = "mock"
   THIRD_PARTY_AVM_ENABLED = "false"
   ZILLOW_API_ENABLED = "false"
+  HIDALGO_LIVE_INGESTION_ENABLED = "false"
   NODE_OPTIONS = "--max-old-space-size=4096"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+[functions]
+  directory = "netlify/functions"

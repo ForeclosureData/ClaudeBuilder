@@ -1,55 +1,98 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import type { CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice } from "../types";
+import type { BundledNotice, CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice } from "../types";
+import { discoverPropertySalePostings, HIDALGO_USER_AGENT } from "./sitemap";
+import { splitHidalgoBundle } from "./splitBundle";
+import { extractPageRangeAsPdf } from "./pdfSplit";
 
 /**
- * Hidalgo County adapter — FIXTURE-BASED MOCK.
+ * Live Hidalgo County adapter.
  *
- * This intentionally does not make any network request to a real county
- * website. Per the product plan, live scraping only starts once:
- *   1. The real site's structure has been inspected,
- *   2. robots.txt / terms of use have been reviewed,
- *   3. rate limiting + caching are implemented in the worker, and
- *   4. the ingestion workflow has been proven safe against fixtures (this).
+ * Discovery: polls the county's own sitemap.xml for CMS pages whose slug
+ * ends in "-PROPERTY-SALE" and follows the DocumentCenter link each one
+ * embeds — both plain unauthenticated GETs against public pages. No
+ * scraping of hidalgo.tx.publicsearch.us or Kofile, per product decision.
  *
- * `discoverNotices` returns a small set of fabricated demo notices so the
- * rest of the pipeline (hashing, dedup, extraction, resolution, summary)
- * can be built and tested end-to-end. Swap this file's body for a real
- * HTTP/Playwright-based implementation later — nothing else in the app
- * needs to change, because everything else only depends on
- * `CountyForeclosureAdapter`.
+ * Download: fetches the bundled monthly PDF directly.
+ *
+ * Split: see splitBundle.ts — the bundle has no text layer, so boundaries
+ * (the recorder's "Doc-XXXXXX" cover sheet, which also states the page
+ * count) and each notice's content are both read via Claude vision.
  */
-
-const FIXTURES_DIR = join(__dirname, "fixtures");
-
-const FIXTURE_FILES = ["notice-001.txt", "notice-002.txt", "notice-003-poor-quality.txt"] as const;
-
 export const hidalgoAdapter: CountyForeclosureAdapter = {
   countyName: "Hidalgo",
   state: "TX",
   adapterKey: "hidalgo",
 
-  async discoverNotices(_params: { startDate?: Date; endDate?: Date }): Promise<DiscoveredNotice[]> {
-    return FIXTURE_FILES.map((filename, index) => ({
-      externalId: `hidalgo-fixture-${index + 1}`,
-      countySourceKey: "hidalgo",
-      sourceUrl: "https://example-fixture.local/hidalgo-foreclosure-notices",
-      documentUrl: `https://example-fixture.local/hidalgo-foreclosure-notices/${filename}`,
-      filename,
-      documentTypeHint: "NOTICE_OF_TRUSTEE_SALE",
-    }));
+  async discoverNotices(params: { startDate?: Date; endDate?: Date }): Promise<DiscoveredNotice[]> {
+    const postings = await discoverPropertySalePostings();
+    return postings
+      .filter((p) => {
+        if (params.startDate && p.postedDate && p.postedDate < params.startDate) return false;
+        if (params.endDate && p.postedDate && p.postedDate > params.endDate) return false;
+        return true;
+      })
+      .map((p) => ({
+        externalId: p.documentId,
+        countySourceKey: "hidalgo",
+        sourceUrl: p.pageUrl,
+        documentUrl: p.documentUrl,
+        filename: p.filename,
+        countyFilingNumber: undefined,
+        filingDate: p.postedDate ?? undefined,
+        documentTypeHint: "PROPERTY_SALE_BUNDLE",
+      }));
   },
 
   async downloadNotice(notice: DiscoveredNotice): Promise<DownloadedNotice> {
-    const filePath = join(FIXTURES_DIR, notice.filename);
-    const fileBuffer = readFileSync(filePath);
+    const res = await fetch(notice.documentUrl, { headers: { "User-Agent": HIDALGO_USER_AGENT } });
+    if (!res.ok) {
+      throw new Error(`Failed to download Hidalgo bundle ${notice.externalId}: HTTP ${res.status}`);
+    }
+    const arrayBuffer = await res.arrayBuffer();
     return {
       notice,
-      fileBuffer,
-      // Fixtures are plain text standing in for a PDF's already-extracted
-      // text layer, so the pipeline can skip straight to normalization
-      // without needing a PDF-parsing dependency in this mock.
-      contentType: "text/plain",
+      fileBuffer: Buffer.from(arrayBuffer),
+      contentType: res.headers.get("content-type") ?? "application/pdf",
     };
   },
+
+  async splitBundle(downloaded: DownloadedNotice): Promise<BundledNotice[]> {
+    const result = await splitHidalgoBundle(downloaded.fileBuffer);
+
+    const bundled: BundledNotice[] = [];
+    for (const notice of result.notices) {
+      let fileBuffer: Buffer | null = null;
+      try {
+        fileBuffer = await extractPageRangeAsPdf(downloaded.fileBuffer, notice.pageStart, notice.pageEnd);
+      } catch {
+        // Non-fatal — the notice's transcribed text and provenance (bundle
+        // URL + page range) are still usable without a standalone PDF.
+        fileBuffer = null;
+      }
+
+      bundled.push({
+        externalId: notice.documentNumber
+          ? `${downloaded.notice.externalId}::doc-${notice.documentNumber}`
+          : `${downloaded.notice.externalId}::pages-${notice.pageStart}-${notice.pageEnd}`,
+        countyFilingNumber: notice.documentNumber,
+        filingDate: parseRecordedOn(notice.recordedOn),
+        documentTypeHint: notice.documentType,
+        noticeText: notice.noticeText,
+        fileBuffer,
+        contentType: "application/pdf",
+        lowConfidence: notice.lowConfidence,
+      });
+    }
+    return bundled;
+  },
 };
+
+function parseRecordedOn(recordedOn: string | null): Date | null {
+  if (!recordedOn) return null;
+  const parsed = new Date(recordedOn);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export { splitHidalgoBundle } from "./splitBundle";
+export type { SplitBundleResult, SplitNotice } from "./splitBundle";
+export { discoverPropertySalePostings } from "./sitemap";
+export type { HidalgoPropertySalePosting } from "./sitemap";

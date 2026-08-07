@@ -13,5 +13,11 @@
     "@types/node": "^20.14.11",
     "typescript": "^5.5.4",
     "vitest": "^2.0.4"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.26.0",
+    "@napi-rs/canvas": "^1.0.3",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108"
   }
 }

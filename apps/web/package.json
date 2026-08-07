@@ -15,6 +15,7 @@
     "@foreclosuredata/api-client": "workspace:*",
     "@foreclosuredata/auth": "workspace:*",
     "@foreclosuredata/config": "workspace:*",
+    "@foreclosuredata/county-adapters": "workspace:*",
     "@foreclosuredata/database": "workspace:*",
     "@foreclosuredata/foreclosure-core": "workspace:*",
     "@foreclosuredata/types": "workspace:*",
