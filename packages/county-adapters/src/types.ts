@@ -52,6 +52,18 @@ export interface SplitBundleOptions {
   maxNotices?: number;
   /** Called after each unit of AI spend (in cents), if the adapter's splitting uses AI — lets the caller track/cap real cost as it runs. */
   onCost?: (costCents: number) => void;
+  /**
+   * Local OCR function for adapters that support it (currently Hidalgo
+   * only — see hidalgo/ocr.ts). When provided, becomes the primary
+   * content-extraction path instead of Claude vision; adapters without
+   * local OCR ignore this. Deliberately generic rather than
+   * Hidalgo-specific so any other scanned-PDF county adapter can reuse it.
+   */
+  ocr?: (pngBuffers: Buffer[]) => Promise<{ text: string; confidence: number }>;
+  /** OCR confidence (0-100) below which the adapter should fall back to Claude vision, for adapters that support `ocr`. Ignored otherwise. */
+  ocrConfidenceThreshold?: number;
+  /** Render scale used for barcode/boundary scanning, for adapters that support barcode-based splitting. Ignored otherwise. */
+  barcodeScanScale?: number;
 }
 
 export interface BundledNotice {
@@ -67,4 +79,8 @@ export interface BundledNotice {
   contentType: string;
   /** True when the adapter itself flagged this split as low-confidence (e.g. thin/garbled transcription) — callers should weight this into manual-review decisions. */
   lowConfidence: boolean;
+  /** Which path produced noticeText, for adapters that support local OCR. Omitted by adapters that don't. */
+  contentSource?: "ocr" | "claude_vision" | "none";
+  /** OCR confidence (0-100), only set when contentSource is "ocr" or the OCR attempt that triggered a Claude fallback. */
+  ocrConfidence?: number | null;
 }

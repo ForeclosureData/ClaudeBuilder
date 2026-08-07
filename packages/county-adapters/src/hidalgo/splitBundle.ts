@@ -67,6 +67,8 @@ export interface SplitBundleOptions {
   ocr?: OcrFunction;
   /** OCR confidence (0-100) below which Claude vision is used as a fallback for that notice. Ignored when `ocr` is not provided. */
   ocrConfidenceThreshold?: number;
+  /** Render scale used for barcode scanning. Default 3.0 (~275 DPI), the resolution confirmed reliable against real Hidalgo notices -- 1.6x scanned zero barcodes even on pages with a clearly-present, clearly-decodable one. Configurable in case a future bundle needs a different scale. */
+  barcodeScanScale?: number;
 }
 
 const DEFAULT_MAX_PAGES_PER_NOTICE = 20;
@@ -87,7 +89,7 @@ export async function splitHidalgoBundle(pdfBytes: Buffer, options: SplitBundleO
 
   const scan = await detectDocumentBoundaries({
     numPages: pdf.numPages,
-    scanPageForBarcode: async (pageNumber) => (await pdf.scanPageForBarcodes(pageNumber))[0] ?? null,
+    scanPageForBarcode: async (pageNumber) => (await pdf.scanPageForBarcodes(pageNumber, options.barcodeScanScale))[0] ?? null,
   });
 
   if (scan.boundaries.length === 0) {

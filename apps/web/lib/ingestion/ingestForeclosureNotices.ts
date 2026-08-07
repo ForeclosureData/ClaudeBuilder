@@ -22,7 +22,7 @@ import {
   generateForeclosureSummary,
   type ResolutionInput,
 } from "@foreclosuredata/foreclosure-core";
-import { getCountyAppraisalAdapter } from "@/lib/appraisal";
+import { getCountyAppraisalAdapter } from "../appraisal";
 
 export interface NoticeReportEntry {
   documentNumber: string | null;
@@ -52,6 +52,16 @@ export interface IngestionRunSummary {
   noticesDuplicate: number;
   noticesPersisted: number;
   noticesRequiringManualReview: number;
+  /** Notices whose content came from local OCR (adapter-reported contentSource === "ocr"). 0 for adapters/runs that don't use OCR. */
+  noticesOcrSuccess: number;
+  /** Notices whose content fell back to Claude vision because OCR confidence/text length looked untrustworthy. */
+  noticesContentClaudeFallback: number;
+  /** Average OCR confidence (0-100) across notices that reported one; null if none did. */
+  averageOcrConfidence: number | null;
+  /** How many Claude field-extraction fallback calls were actually made this run (bounded by maxAiFallbackCallsPerRun). */
+  aiFallbackCallCount: number;
+  /** True if a run-level AI budget/call cap (not just the monthly budget) stopped further fallback calls before every eligible notice got one. */
+  aiBudgetExhausted: boolean;
   aiCostCents: number;
   errors: string[];
   perNoticeReport: NoticeReportEntry[];
@@ -62,6 +72,15 @@ export interface IngestOptions {
   maxNoticesPerBundle?: number;
   /** Caps how many bundles are processed in this run. */
   maxBundles?: number;
+  /** Local OCR function (e.g. ocrPages from @foreclosuredata/county-adapters' hidalgo/ocr.ts), forwarded to the adapter's splitBundle. Omitted entirely by callers that shouldn't/can't use local OCR (e.g. the Netlify-hosted scheduled trigger). */
+  ocr?: (pngBuffers: Buffer[]) => Promise<{ text: string; confidence: number }>;
+  ocrConfidenceThreshold?: number;
+  /** Render scale used for barcode/boundary scanning, forwarded to adapters that support it. */
+  barcodeScanScale?: number;
+  /** Hard cap on Claude field-extraction fallback calls for this whole run, independent of the monthly dollar budget — a pilot-phase safety net given a small test API balance. Unbounded when omitted. */
+  maxAiFallbackCallsPerRun?: number;
+  /** Hard cap on Claude field-extraction spend (in cents) for this whole run. Unbounded when omitted (still subject to the monthly AI_EXTRACTION_MONTHLY_BUDGET_CENTS ceiling). */
+  maxAiCostPerRunCents?: number;
 }
 
 const AI_MONTHLY_BUDGET_CENTS = Number(process.env.AI_EXTRACTION_MONTHLY_BUDGET_CENTS ?? 5000);
@@ -88,6 +107,11 @@ export async function ingestForeclosureNotices(
     noticesDuplicate: 0,
     noticesPersisted: 0,
     noticesRequiringManualReview: 0,
+    noticesOcrSuccess: 0,
+    noticesContentClaudeFallback: 0,
+    averageOcrConfidence: null,
+    aiFallbackCallCount: 0,
+    aiBudgetExhausted: false,
     aiCostCents: 0,
     errors: [],
     perNoticeReport: [],
@@ -105,14 +129,29 @@ export async function ingestForeclosureNotices(
   const bundlesToProcess = options.maxBundles ? discovered.slice(0, options.maxBundles) : discovered;
 
   const appraisalAdapter = getCountyAppraisalAdapter(countySlug);
+  let ocrConfidenceSum = 0;
+  let ocrConfidenceCount = 0;
   let spentThisRunCents = 0;
+  let aiCallCount = 0;
+  const maxAiCostPerRunCents = options.maxAiCostPerRunCents ?? Infinity;
+  const maxAiFallbackCallsPerRun = options.maxAiFallbackCallsPerRun ?? Infinity;
   const budget = {
+    // Checked BEFORE each Claude field-extraction call — three independent
+    // ceilings (monthly dollar budget, this run's dollar cap, this run's
+    // call-count cap) all have to allow it, or the field stays
+    // null/low-confidence and flows to manual review instead of spending.
     async hasHeadroom(): Promise<boolean> {
-      return spentThisRunCents < AI_MONTHLY_BUDGET_CENTS;
+      const withinMonthlyBudget = spentThisRunCents < AI_MONTHLY_BUDGET_CENTS;
+      const withinRunCostCap = spentThisRunCents < maxAiCostPerRunCents;
+      const withinRunCallCap = aiCallCount < maxAiFallbackCallsPerRun;
+      if (!withinRunCostCap || !withinRunCallCap) summary.aiBudgetExhausted = true;
+      return withinMonthlyBudget && withinRunCostCap && withinRunCallCap;
     },
     async recordSpend(costCents: number): Promise<void> {
+      aiCallCount++;
       spentThisRunCents += costCents;
       summary.aiCostCents += costCents;
+      summary.aiFallbackCallCount = aiCallCount;
     },
   };
 
@@ -169,6 +208,9 @@ export async function ingestForeclosureNotices(
         onCost: (costCents) => {
           summary.aiCostCents += costCents;
         },
+        ocr: options.ocr,
+        ocrConfidenceThreshold: options.ocrConfidenceThreshold,
+        barcodeScanScale: options.barcodeScanScale,
       });
     } catch (err) {
       summary.bundlesFailed++;
@@ -186,6 +228,12 @@ export async function ingestForeclosureNotices(
 
     for (const bundledNotice of bounded) {
       if (bundledNotice.lowConfidence) summary.noticesTranscriptionLowConfidence++;
+      if (bundledNotice.contentSource === "ocr") summary.noticesOcrSuccess++;
+      else if (bundledNotice.contentSource === "claude_vision") summary.noticesContentClaudeFallback++;
+      if (typeof bundledNotice.ocrConfidence === "number") {
+        ocrConfidenceSum += bundledNotice.ocrConfidence;
+        ocrConfidenceCount++;
+      }
 
       const entry = await processSingleNotice({
         county,
@@ -230,6 +278,8 @@ export async function ingestForeclosureNotices(
       });
     }
   }
+
+  if (ocrConfidenceCount > 0) summary.averageOcrConfidence = ocrConfidenceSum / ocrConfidenceCount;
 
   return summary;
 }

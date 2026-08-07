@@ -1,0 +1,93 @@
+name: Hidalgo Foreclosure Ingestion
+
+# Manual trigger only for now. This is the heavy, CPU-bound ingestion
+# pipeline (PDF rendering, barcode detection, OCR, extraction) that used to
+# be attempted inside Netlify Functions -- moved here because it needs
+# native/WASM tooling (Tesseract in particular) that doesn't fit a
+# serverless bundle. Netlify keeps the web app and lightweight API routes;
+# this workflow owns discovery -> download -> render -> split -> OCR ->
+# extraction -> property resolution -> persistence.
+#
+# No `schedule:` trigger yet, deliberately -- recurring execution is only
+# added after a manual dry-run and a bounded production run have both been
+# verified. See apps/web/scripts/ci-ingest-hidalgo.mts for what each mode
+# actually does.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run: render/OCR/extract only, zero DB writes, zero Anthropic calls. production: real ingestion, bounded by the limits below."
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - production
+      max_bundles:
+        description: "Max bundles to process this run (production mode only)"
+        required: false
+        default: "1"
+      max_notices_per_bundle:
+        description: "Max notices to split per bundle -- keep this small until accuracy is verified"
+        required: false
+        default: "5"
+      max_ai_fallback_calls:
+        description: "Hard cap on Claude field-extraction fallback calls this run (production mode only)"
+        required: false
+        default: "10"
+      max_ai_cost_usd:
+        description: "Hard cap on Anthropic spend this run, in USD (production mode only)"
+        required: false
+        default: "1.00"
+      barcode_scan_scale:
+        description: "Render scale used for cover-sheet barcode detection (3.0 confirmed reliable; 1.6 was not)"
+        required: false
+        default: "3.0"
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck ingestion packages
+        run: |
+          pnpm --filter @foreclosuredata/county-adapters exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Run Hidalgo ingestion (${{ inputs.mode }})
+        env:
+          # Prisma. DIRECT_URL is only needed if the pooled DATABASE_URL
+          # can't run migrations/introspection; harmless to pass either way.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          # Dedicated ForeclosureData Anthropic key -- NOT the Merchant1
+          # Solutions credential used elsewhere in this org.
+          ANTHROPIC_API_KEY: ${{ secrets.FORECLOSUREDATA_ANTHROPIC_API_KEY }}
+          INGEST_MODE: ${{ inputs.mode }}
+          MAX_BUNDLES: ${{ inputs.max_bundles }}
+          MAX_NOTICES_PER_BUNDLE: ${{ inputs.max_notices_per_bundle }}
+          MAX_AI_FALLBACK_CALLS_PER_RUN: ${{ inputs.max_ai_fallback_calls }}
+          MAX_AI_COST_PER_RUN_USD: ${{ inputs.max_ai_cost_usd }}
+          BARCODE_SCAN_SCALE: ${{ inputs.barcode_scan_scale }}
+        run: pnpm --filter @foreclosuredata/web run ingest:hidalgo:ci

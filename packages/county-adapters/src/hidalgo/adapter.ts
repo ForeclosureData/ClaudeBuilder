@@ -59,6 +59,9 @@ export const hidalgoAdapter: CountyForeclosureAdapter = {
     const result = await splitHidalgoBundle(downloaded.fileBuffer, {
       maxNotices: options?.maxNotices,
       onCost: options?.onCost,
+      ocr: options?.ocr,
+      ocrConfidenceThreshold: options?.ocrConfidenceThreshold,
+      barcodeScanScale: options?.barcodeScanScale,
     });
 
     const bundled: BundledNotice[] = [];
@@ -83,6 +86,8 @@ export const hidalgoAdapter: CountyForeclosureAdapter = {
         fileBuffer,
         contentType: "application/pdf",
         lowConfidence: notice.lowConfidence,
+        contentSource: notice.contentSource,
+        ocrConfidence: notice.ocrConfidence,
       });
     }
 

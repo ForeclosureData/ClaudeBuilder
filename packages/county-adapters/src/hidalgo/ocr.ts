@@ -5,10 +5,12 @@
  * from disk rather than fetched from a CDN, so a cold start never needs
  * network access to do OCR.
  *
- * NOT wired into the Netlify serverless deploy -- see splitBundle.ts and
- * the ingestion status report for why. In short: unlike mupdf/zbar-wasm
- * (a single self-contained WASM file each), tesseract.js's Node worker
- * spawns a real worker_thread from a file path computed via its own
+ * Deliberately NOT wired into the Netlify serverless deploy -- imported
+ * only by the GitHub Actions ingestion workflow (see
+ * apps/web/scripts/ci-ingest-hidalgo.ts), which runs on a full Ubuntu
+ * runner with no serverless bundle-tracing constraints. Unlike mupdf/
+ * zbar-wasm (a single self-contained WASM file each), tesseract.js's Node
+ * worker spawns a real worker_thread from a file path computed via its own
  * __dirname at runtime, and its Core loader dynamically `require()`s one
  * of several WASM variants based on a CPU feature probe done at runtime --
  * so nothing short of tracing tesseract.js's *entire* source tree plus all
@@ -16,13 +18,13 @@
  * actually used depending on the deployed CPU) would make it resolvable in
  * a packaged Lambda bundle. That's the exact "scattered fallback/worker
  * files" failure pattern that made pdfjs-dist unreliable in Lambda earlier
- * in this project, at a larger unpacked size. Runs correctly here as a
- * long-lived local/worker process instead.
+ * in this project, at a larger unpacked size.
  */
 import { createWorker, OEM, type Worker } from "tesseract.js";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ASSETS_DIR = path.join(__dirname, "..", "..", "assets");
+const ASSETS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets");
 
 export interface OcrResult {
   text: string;

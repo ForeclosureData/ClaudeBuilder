@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice } from "../types";
 
 /**
@@ -8,7 +9,7 @@ import type { CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice } fro
  * actually polls hidalgocounty.us.
  */
 
-const FIXTURES_DIR = join(__dirname, "fixtures");
+const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
 const FIXTURE_FILES = ["notice-001.txt", "notice-002.txt", "notice-003-poor-quality.txt"] as const;
 
