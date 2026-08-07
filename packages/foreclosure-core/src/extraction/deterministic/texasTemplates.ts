@@ -13,8 +13,7 @@ import { parseLegalDescription } from "./legalDescription";
 export function extractDeterministic(noticeText: string): ExtractedForeclosureNotice {
   const text = normalize(noticeText);
 
-  const grantorMatch = text.match(/Grant(?:o|0)r:?\s*([^\n]+)/i);
-  const grantorNames = grantorMatch && looksLikeNameList(grantorMatch[1]!) ? splitNames(grantorMatch[1]!) : [];
+  const { match: grantorMatch, names: grantorNames } = extractGrantorNames(text);
 
   const currentMortgageeMatch = text.match(/Current Mortgagee:?\s*([^\n]+)/i);
   const lenderMatch = currentMortgageeMatch ?? text.match(/Original Mortgagee:?\s*([^\n]+)/i) ?? text.match(/payable to the order of\s+([^\n,]+)/i);
@@ -32,7 +31,14 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
   const recordingDate = parseLabeledDate(text, /Record(?:ed|ing (?:Information|Date)):?/i);
   const instrumentMatch = text.match(/Instrument No\.?\s*([A-Za-z0-9\-]+)/i);
 
-  const saleDate = parseLabeledDate(text, /Date of Sale:?/i) ?? parseLabeledDate(text, /^Date:?/im);
+  // "Sale Information: August 4, 2026, at 10:00 AM..." is a real Hidalgo
+  // template variant with no "Date of Sale:" label at all. Checked before
+  // the generic `^Date:?` line-start fallback, which is risky against real
+  // OCR text -- on one real notice it matched a line-wrapped "dated
+  // November 30, 2017" (the Deed of Trust date, not the sale date) instead
+  // because that word happened to fall at the start of an OCR'd line.
+  const saleDate =
+    parseLabeledDate(text, /Date of Sale:?/i) ?? parseLabeledDate(text, /Sale Information:?/i) ?? parseLabeledDate(text, /^Date:?/im);
   const saleTime = parseLabeledTime(text, /Time of Sale:?/i) ?? parseLabeledTime(text, /^Time:?/im);
   const saleLocationMatch = text.match(/Place of Sale:?\s*([^\n]+(?:\n[^\n]+)?)/i) ?? text.match(/^Place:?\s*([^\n]+(?:\n[^\n]+)?)/im);
 
@@ -110,7 +116,7 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
     saleDate: value(saleDate, {
       explicitlyStated: Boolean(saleDate),
       confidence: saleDate ? 0.95 : 0,
-      supportingText: evidence(/Date of Sale:?[^\n]+/i),
+      supportingText: evidence(/Date of Sale:?[^\n]+/i) ?? evidence(/Sale Information:?[^\n]+/i),
     }),
     saleTime: value(saleTime, {
       explicitlyStated: Boolean(saleTime),
@@ -173,9 +179,63 @@ function looksLikeNameList(text: string): boolean {
   return /^[A-Z][a-zA-Z.&'\-]*(?:\s+[A-Z][a-zA-Z.&'\-]*){1,}/.test(trimmed);
 }
 
+/**
+ * Marital-status descriptors ("HUSBAND AND WIFE", "AN UNMARRIED MAN", ...)
+ * sit in the same comma/AND-separated list as the actual grantor names in
+ * real Hidalgo notices (e.g. "JUAN DOE, AN UNMARRIED MAN AND JANE ROE, AN
+ * UNMARRIED WOMAN"), so a plain split on "AND"/"," turns them into two
+ * fake extra "names". Filtered out post-split rather than stripped as a
+ * prefix/suffix beforehand, since they can appear after each individual
+ * name in a multi-grantor list, not just once at the end.
+ */
+const MARITAL_STATUS_DESCRIPTOR = /^(?:an?\s+)?(?:unmarried|married|single)\s+(?:man|woman|person)$|^husband$|^wife$|^husband and wife$/i;
+
 function splitNames(raw: string): string[] {
   return cleanName(raw)
     .split(/\s+AND\s+|\s+and\/or\s+|,\s*/i)
     .map((n) => n.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((n) => !MARITAL_STATUS_DESCRIPTOR.test(n));
+}
+
+/**
+ * Real Hidalgo notices use at least three different templates for the
+ * borrower/grantor field, confirmed against the first 5 real production
+ * notices (August 2026 postings):
+ *  - "Grantor(s)/Mortgagor(s):" label, name on the same line
+ *  - "Trustor(s):" label (legally synonymous with Grantor here, not
+ *    previously recognized at all) -- and, in the specific sample seen,
+ *    with the name landing on the *next* line after a garbled OCR date
+ *    token (e.g. a mis-scanned "12/20/2018" reading as "121202018")
+ *  - No label at all: narrative prose ("...the deed of trust executed by
+ *    NAME..." / "The Deed of Trust executed by NAME secures...")
+ * The label-based captures are unreliable on their own: these are table
+ * layouts, and OCR reads side-by-side columns left-to-right per visual
+ * row, so text from the *next* column (e.g. "Original Beneficiary:
+ * MORTGAGE ELECTRONIC...") frequently bleeds onto the same line as the
+ * name. The narrative "executed by" sentence is plain prose, untouched by
+ * table-column bleed, and was present (often redundantly, alongside a
+ * label) in every real sample checked -- so it's tried first.
+ */
+function extractGrantorNames(text: string): { match: RegExpMatchArray | null; names: string[] } {
+  const executedByMatch = text.match(
+    /deed of trust executed by\s+([\s\S]{1,180}?)(?:\s+secures the repayment|\.\s*[Tt]he [Rr]eal property)/i,
+  );
+  if (executedByMatch && looksLikeNameList(executedByMatch[1]!)) {
+    return { match: executedByMatch, names: splitNames(executedByMatch[1]!) };
+  }
+
+  const sameLineMatch = text.match(/(?:Grant(?:o|0)r\(?s?\)?(?:\/Mortgagor\(?s?\)?)?|Trustor\(?s?\)?):?\s*([^\n]+)/i);
+  if (sameLineMatch && looksLikeNameList(sameLineMatch[1]!)) {
+    return { match: sameLineMatch, names: splitNames(sameLineMatch[1]!) };
+  }
+
+  const nextLineMatch = text.match(
+    /(?:Grant(?:o|0)r\(?s?\)?(?:\/Mortgagor\(?s?\)?)?|Trustor\(?s?\)?):?\s*\n\s*(?:[\d/]{6,12}\s+)?([A-Z][A-Za-z .,'\-]+(?:AND\s+[A-Z][A-Za-z .,'\-]+)?)/i,
+  );
+  if (nextLineMatch && looksLikeNameList(nextLineMatch[1]!)) {
+    return { match: nextLineMatch, names: splitNames(nextLineMatch[1]!) };
+  }
+
+  return { match: null, names: [] };
 }

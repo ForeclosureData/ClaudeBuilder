@@ -125,3 +125,77 @@ Place of Sale: Hidalgo County Courthouse, Edinburg, Texas.`;
     expect(needsAiFallback(result)).toBe(false);
   });
 });
+
+// The fixtures below mirror real structural patterns confirmed against
+// the first 5 real Hidalgo production notices (August 2026 postings) --
+// but use placeholder names, not the real borrower names, since this file
+// is committed to a public repo. See texasTemplates.ts's extractGrantorNames
+// doc comment for the full rationale.
+describe("extractDeterministic (real-world Hidalgo grantor templates)", () => {
+  it("extracts grantor names from a 'Trustor(s):' table label plus a redundant 'executed by' sentence, filtering the marital-status suffix", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+Property Address: 123 Sample St, Pharr, Texas 78577
+Trustor(s): JOHN A. SAMPLE Original MORTGAGE ELECTRONIC
+AND MARY B. SAMPLE Beneficiary: REGISTRATION SYSTEMS, INC.
+
+...pursuant to the power of the sale granted by the deed of trust executed by JOHN A. SAMPLE AND
+MARY B. SAMPLE, HUSBAND AND WIFE. The real property and personal property encumbered by the
+deed of trust will be sold at the sale.
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["JOHN A. SAMPLE", "MARY B. SAMPLE"]);
+    // Marital-status descriptors must never be fabricated into names.
+    expect(result.borrowerNames.value).not.toContain("HUSBAND");
+    expect(result.borrowerNames.value).not.toContain("WIFE");
+  });
+
+  it("extracts a single grantor from an 'Obligation Secured... executed by NAME secures' sentence with no label at all", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+Obligation Secured: The Deed of Trust executed by PATRICIA C. SAMPLE secures the repayment of a Note
+dated November 30, 2017 in the amount of $88,712.00.
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["PATRICIA C. SAMPLE"]);
+  });
+
+  it("extracts grantor names from a label sitting alone on its own line, with the name on the next line after a garbled OCR date token", () => {
+    const notice = `Doc-999999
+NOTICE OF SUBSTITUTE TRUSTEE SALE
+Deed of Trust Date: Grantor(s)/Mortgagor(s):
+121202018 CARLOS D. SAMPLE AND ELENA F. SAMPLE
+HUSBAND AND WIFE
+Original Beneficiary: MORTGAGE ELECTRONIC REGISTRATION SYSTEMS
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["CARLOS D. SAMPLE", "ELENA F. SAMPLE"]);
+  });
+
+  it("filters per-person marital-status descriptors (AN UNMARRIED MAN / AN UNMARRIED WOMAN) rather than treating them as extra grantors", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+...granted by the deed of trust executed by DAVID G. SAMPLE, AN UNMARRIED MAN AND
+LISA H. SAMPLE, AN UNMARRIED WOMAN. The real property and personal property
+encumbered by the deed of trust will be sold at the sale.
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["DAVID G. SAMPLE", "LISA H. SAMPLE"]);
+  });
+
+  it("extracts sale date from a 'Sale Information:' line, ignoring an earlier unrelated 'dated' occurrence that could be mistaken for a date label", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+Obligation Secured: The Deed of Trust executed by PATRICIA C. SAMPLE secures the repayment of a Note
+dated November 30, 2017 in the amount of $88,712.00.
+Sale Information: August 4, 2026, at 10:00 AM, or not later than three hours thereafter, at the Hidalgo
+County Administrative Building.`;
+    const result = extractDeterministic(notice);
+    expect(result.saleDate.value).toBe("2026-08-04");
+  });
+
+  it("still returns null rather than guessing when no recognizable grantor phrasing is present", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+Property Address: 456 Sample Ave, Pharr, Texas 78577
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toBeNull();
+    expect(result.borrowerNames.confidence).toBe(0);
+  });
+});
