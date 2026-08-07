@@ -11,11 +11,15 @@
     (node -e "console.log(require.resolve('.prisma/client/default', {paths:['./node_modules/@prisma/client']}))" || echo "RESOLVE FAILED") && \
     (grep -c appraisalPropertyCandidate packages/database/node_modules/.prisma/client/index.d.ts 2>/dev/null || echo "no packages/database/node_modules/.prisma/client") && \
     echo "--- END DIAGNOSTIC ---" && \
-    export DATABASE_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
+    NETLIFY_AUTO_DB_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
+    if [ -n "$NETLIFY_AUTO_DB_URL" ]; then export DATABASE_URL="$NETLIFY_AUTO_DB_URL"; fi && \
     export DIRECT_URL="$DATABASE_URL" && \
     if [ -n "$DATABASE_URL" ]; then \
-      pnpm --filter @foreclosuredata/database run db:push || true; \
+      echo "--- RUNNING prisma db push (failure fails the build) ---" && \
+      pnpm --filter @foreclosuredata/database run db:push && \
       pnpm --filter @foreclosuredata/database run db:seed || true; \
+    else \
+      echo "--- NO DATABASE_URL AVAILABLE, SKIPPING db:push/db:seed ---"; \
     fi && \
     echo "--- POST-DB-PUSH PRISMA CLIENT DIAGNOSTIC ---" && \
     (grep -c appraisalPropertyCandidate node_modules/.prisma/client/index.d.ts || echo "MISSING in node_modules/.prisma/client/index.d.ts") && \
