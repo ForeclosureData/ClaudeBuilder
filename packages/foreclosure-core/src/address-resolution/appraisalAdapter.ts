@@ -5,8 +5,9 @@ import type {
   AppraisalPropertyRecord,
   AppraisalSourceAccessMetadata,
   AppraisalRequestBudget,
+  AppraisalValueYear,
 } from "@foreclosuredata/types";
-import { searchFullText, searchStructured, mapRowToCandidate, type RawPropertyRow } from "./hidalgoCadClient";
+import { searchFullText, searchStructured, mapRowToCandidate, getValuationHistory, type RawPropertyRow } from "./hidalgoCadClient";
 import { parseLegalDescriptionTokens, normalizeToken } from "./legalDescriptionParsing";
 
 export type {
@@ -15,6 +16,7 @@ export type {
   AppraisalPropertyCandidate,
   AppraisalPropertyRecord,
   AppraisalSourceAccessMetadata,
+  AppraisalValueYear,
 };
 
 /**
@@ -198,6 +200,22 @@ export class HidalgoCountyAppraisalAdapter implements CountyAppraisalAdapter {
     return mapRowToCandidate(match);
   }
 
+  /**
+   * Valuation-only lookup for an already-identified property -- never
+   * re-resolves or re-selects the property itself. Confirmed live: the
+   * CAD's "current" appraisal year (per /public/config/currentyear) is
+   * often the *working* year for the next appraisal cycle, not yet
+   * certified -- every value field comes back "N/A" and the row's own
+   * `valueReady` flag is 0 (this is exactly the signal the public
+   * portal's own client code checks: `marketValue: e.valueReady ?
+   * e.marketValue : "N/A"`). The prior year(s) are typically certified
+   * (`valueReady: 1`) with real populated values. See
+   * hidalgoCadClient.ts's getValuationHistory for the year-walkback.
+   */
+  async getValuationHistory(sourcePropertyId: string, options?: { maxYearsBack?: number; budget?: AppraisalRequestBudget }): Promise<AppraisalValueYear[]> {
+    return getValuationHistory(sourcePropertyId, options);
+  }
+
   async getAccessMetadata(): Promise<AppraisalSourceAccessMetadata> {
     return {
       officialApiAvailable: true,
@@ -308,4 +326,18 @@ function normalize(value: string | null | undefined): string {
 function surname(fullNameLower: string): string {
   const parts = fullNameLower.split(/\s+/).filter(Boolean);
   return parts[parts.length - 1] ?? fullNameLower;
+}
+
+/**
+ * Picks which year's values a property page should display: the most
+ * recent year with `populated: true`, regardless of how many unpopulated
+ * (e.g. not-yet-certified current-year) entries getValuationHistory also
+ * returned. Returns null if nothing in the history is populated -- the
+ * caller should show "not yet available" rather than a zeroed-out or
+ * missing year, never invent a number.
+ */
+export function selectDisplayValuation(years: AppraisalValueYear[]): AppraisalValueYear | null {
+  const populated = years.filter((y) => y.populated);
+  if (populated.length === 0) return null;
+  return populated.reduce((latest, y) => (y.taxYear > latest.taxYear ? y : latest));
 }

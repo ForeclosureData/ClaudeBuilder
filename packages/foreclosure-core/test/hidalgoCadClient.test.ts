@@ -182,4 +182,64 @@ describe("hidalgoCadClient", () => {
     await client.searchStructured("pid", "999", "=");
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
   });
+
+  describe("getValuationHistory", () => {
+    function rowForYear(year: number, opts: { populated: boolean }) {
+      return opts.populated
+        ? { pid: "717490", pYear: year, marketValue: 264929, appraisedValue: 264929, landValue: 67500, improvementValue: 197429, valueReady: 1 }
+        : { pid: "717490", pYear: year, marketValue: "N/A", appraisedValue: "N/A", landValue: "N/A", improvementValue: "N/A", valueReady: 0 };
+    }
+
+    it("stops at the first populated year, confirmed against the real observed shape (2027 uncertified, 2026 certified)", async () => {
+      const client = await freshClient();
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ user: { token: SAMPLE_TOKEN } }, { status: 201 }))
+        .mockResolvedValueOnce(jsonResponse({ results: { year: 2027 } }))
+        .mockResolvedValueOnce(jsonResponse({ results: [rowForYear(2027, { populated: false })] }))
+        .mockResolvedValueOnce(jsonResponse({ results: [rowForYear(2026, { populated: true })] }));
+
+      const years = await client.getValuationHistory("717490");
+      expect(years.map((y) => y.taxYear)).toEqual([2027, 2026]);
+      expect(years[0]!.populated).toBe(false);
+      expect(years[0]!.certified).toBe(false);
+      expect(years[1]!.populated).toBe(true);
+      expect(years[1]!.certified).toBe(true);
+      expect(years[1]!.marketValueCents).toBe(26_492_900);
+      expect(years[1]!.landValueCents).toBe(6_750_000);
+      // Only 2 years queried, not the full lookback -- stopped once populated.
+      expect(fetchMock.mock.calls.length).toBe(4);
+    });
+
+    it("gives up after HIDALGO_CAD_VALUATION_YEAR_LOOKBACK years and returns every year queried, all unpopulated, without fabricating a value", async () => {
+      const client = await freshClient();
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ user: { token: SAMPLE_TOKEN } }, { status: 201 }))
+        .mockResolvedValueOnce(jsonResponse({ results: { year: 2027 } }))
+        .mockResolvedValueOnce(jsonResponse({ results: [rowForYear(2027, { populated: false })] }))
+        .mockResolvedValueOnce(jsonResponse({ results: [rowForYear(2026, { populated: false })] }))
+        .mockResolvedValueOnce(jsonResponse({ results: [rowForYear(2025, { populated: false })] }));
+
+      const years = await client.getValuationHistory("717490", { maxYearsBack: 2 });
+      expect(years.map((y) => y.taxYear)).toEqual([2027, 2026, 2025]);
+      expect(years.every((y) => !y.populated)).toBe(true);
+      expect(years.every((y) => y.marketValueCents === null)).toBe(true);
+    });
+
+    it("treats a year with no matching row at all the same as an unpopulated year, not an error", async () => {
+      const client = await freshClient();
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ user: { token: SAMPLE_TOKEN } }, { status: 201 }))
+        .mockResolvedValueOnce(jsonResponse({ results: { year: 2027 } }))
+        .mockResolvedValueOnce(emptyResponse(204))
+        .mockResolvedValueOnce(jsonResponse({ results: [rowForYear(2026, { populated: true })] }));
+
+      const years = await client.getValuationHistory("717490");
+      expect(years[0]!.populated).toBe(false);
+      expect(years[0]!.certified).toBeNull();
+      expect(years[1]!.populated).toBe(true);
+    });
+  });
 });

@@ -15,14 +15,16 @@ export type { ExtractionPipelineResult } from "./extraction/pipeline";
 
 export { resolvePropertyAddress } from "./address-resolution/resolver";
 export type { ResolutionInput, ResolvedAddress, ResolutionOutcome, RequestBudget } from "./address-resolution/resolver";
-export { MockCountyAppraisalAdapter, HidalgoCountyAppraisalAdapter } from "./address-resolution/appraisalAdapter";
+export { MockCountyAppraisalAdapter, HidalgoCountyAppraisalAdapter, selectDisplayValuation, extractStreetSearchTerm } from "./address-resolution/appraisalAdapter";
 export type {
   CountyAppraisalAdapter,
   AppraisalPropertySearchQuery,
   AppraisalPropertyCandidate,
   AppraisalPropertyRecord,
   AppraisalSourceAccessMetadata,
+  AppraisalValueYear,
 } from "./address-resolution/appraisalAdapter";
+export { getValuationHistory as getHidalgoValuationHistory } from "./address-resolution/hidalgoCadClient";
 export { scoreCandidates, resolveFromCandidates, getMatchThresholdsFromEnv, explainMatch } from "./address-resolution/scoring";
 export type { ScoringInput, ScoredCandidate, MatchThresholds } from "./address-resolution/scoring";
 export { normalizeOwnerName, ownerNamesLikelyRelated, surnamesMatch } from "./address-resolution/ownerNameNormalization";

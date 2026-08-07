@@ -32,7 +32,7 @@
  * makes, across every page of every search strategy, spends from that
  * same shared budget.
  */
-import type { AppraisalPropertyCandidate, AppraisalRequestBudget } from "@foreclosuredata/types";
+import type { AppraisalPropertyCandidate, AppraisalRequestBudget, AppraisalValueYear } from "@foreclosuredata/types";
 import { parseLegalDescriptionTokens } from "./legalDescriptionParsing";
 
 const API_BASE = "https://prod-container.trueprodigyapi.com";
@@ -43,6 +43,7 @@ const REQUEST_DELAY_MS = Number(process.env.HIDALGO_CAD_REQUEST_DELAY_MS ?? 2000
 const CONCURRENCY = Number(process.env.HIDALGO_CAD_CONCURRENCY ?? 1);
 const PAGE_SIZE = Number(process.env.HIDALGO_CAD_PAGE_SIZE ?? 20);
 const MAX_PAGES_PER_SEARCH = Number(process.env.HIDALGO_CAD_MAX_PAGES_PER_SEARCH ?? 5);
+const VALUATION_YEAR_LOOKBACK = Number(process.env.HIDALGO_CAD_VALUATION_YEAR_LOOKBACK ?? 2);
 
 if (CONCURRENCY !== 1) {
   // Only concurrency=1 has been validated against the real API during the
@@ -162,6 +163,8 @@ export interface RawPropertyRow {
   latitude: number | null;
   longitude: number | null;
   propType: string | null;
+  /** The portal's own certification/completeness flag for this row's year -- confirmed both empirically (0 for the not-yet-certified current year, 1 for prior certified years) and from the public client's own source, which renders `marketValue: e.valueReady ? e.marketValue : "N/A"`. Typed loosely since the API returns it as 0/1, not a real boolean. */
+  valueReady?: number | boolean | null;
 }
 
 interface SearchFieldValue {
@@ -271,16 +274,66 @@ export async function searchFullText(term: string, options?: PaginatedSearchOpti
 
 export type StructuredSearchField = "pid" | "geoID" | "name" | "streetPrimary" | "ownerID";
 
-/** Field-specific structured search -- confirmed more precise than full-text for the fields that have a dedicated column (Property ID, GEO ID, Owner Name, Property Address). */
+/** Field-specific structured search -- confirmed more precise than full-text for the fields that have a dedicated column (Property ID, GEO ID, Owner Name, Property Address). Defaults to the current appraisal year; pass `year` to query a specific one instead (see searchStructuredForYear / getValuationHistory). */
 export async function searchStructured(
   field: StructuredSearchField,
   value: string,
   operator: SearchFieldValue["operator"],
-  options?: PaginatedSearchOptions,
+  options?: PaginatedSearchOptions & { year?: number },
 ): Promise<RawPropertyRow[]> {
-  const year = await getCurrentYear();
+  const year = options?.year ?? (await getCurrentYear());
   const body = { pYear: { operator: "=" as const, value: String(year) }, [field]: { operator, value } };
   return paginate((page) => fetchPage("/public/property/search", body, `structured:${field}`, page, options?.budget), options);
+}
+
+/**
+ * Looks up a specific property's values for its current appraisal year,
+ * then walks backward one year at a time -- stopping at the first year
+ * whose values are actually populated (see RawPropertyRow.valueReady) --
+ * for up to `maxYearsBack` additional years (default
+ * HIDALGO_CAD_VALUATION_YEAR_LOOKBACK). Returns every year actually
+ * queried, in current-year-first order, so the caller can see both the
+ * years that came back empty and the one that didn't. Never fabricates a
+ * value: a year with no populated values is still returned, with every
+ * value field null and `populated: false`, rather than skipped silently.
+ */
+export async function getValuationHistory(
+  pid: string,
+  options?: { maxYearsBack?: number; budget?: AppraisalRequestBudget },
+): Promise<AppraisalValueYear[]> {
+  const currentYear = await getCurrentYear();
+  const maxYearsBack = options?.maxYearsBack ?? VALUATION_YEAR_LOOKBACK;
+
+  const results: AppraisalValueYear[] = [];
+  for (let back = 0; back <= maxYearsBack; back++) {
+    const year = currentYear - back;
+    const rows = await searchStructured("pid", pid, "=", { year, budget: options?.budget, maxPages: 1 });
+    const row = rows.find((r) => String(r.pid) === pid) ?? rows[0] ?? null;
+    results.push(rowToValueYear(pid, year, row));
+    if (results[results.length - 1]!.populated) break;
+  }
+  return results;
+}
+
+function rowToValueYear(pid: string, year: number, row: RawPropertyRow | null): AppraisalValueYear {
+  const landValueCents = row ? toCents(row.landValue) : null;
+  const improvementValueCents = row ? toCents(row.improvementValue) : null;
+  const appraisedValueCents = row ? toCents(row.appraisedValue) : null;
+  const marketValueCents = row ? toCents(row.marketValue) : null;
+  return {
+    taxYear: year,
+    landValueCents,
+    improvementValueCents,
+    appraisedValueCents,
+    // Not observed as a distinct field in the live response -- left null
+    // rather than guessed (same convention as mapRowToCandidate).
+    assessedValueCents: null,
+    marketValueCents,
+    certified: row?.valueReady === undefined || row?.valueReady === null ? null : Boolean(Number(row.valueReady)),
+    populated: landValueCents !== null || improvementValueCents !== null || appraisedValueCents !== null || marketValueCents !== null,
+    sourceUrl: `${PORTAL_URL}?pid=${pid}&year=${year}`,
+    retrievedAt: new Date().toISOString(),
+  };
 }
 
 export function mapRowToCandidate(row: RawPropertyRow): AppraisalPropertyCandidate {

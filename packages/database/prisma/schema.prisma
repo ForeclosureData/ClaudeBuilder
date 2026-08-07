@@ -1070,6 +1070,11 @@ model AppraisalValueHistory {
   marketValueCents        Int?     @map("market_value_cents")
   homestead               Boolean?
   exemptions               String[] @default([])
+  /// Source's own certified-vs-working-year indicator when available (e.g.
+  /// Hidalgo CAD's `valueReady` flag: false for the not-yet-certified
+  /// current appraisal year, true for a certified prior year). Null when
+  /// the source doesn't expose this distinction.
+  certified               Boolean? @map("certified")
 
   sourceUrl   String?  @map("source_url")
   retrievedAt DateTime @default(now()) @map("retrieved_at")

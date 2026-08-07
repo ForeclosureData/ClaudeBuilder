@@ -278,6 +278,29 @@ export interface AppraisalPropertyCandidate {
 /** Full detail fetch — same shape as a candidate today; kept distinct in the interface since a real adapter's "details" call is typically a different, richer request than "search." */
 export type AppraisalPropertyRecord = AppraisalPropertyCandidate;
 
+/**
+ * One tax/appraisal year's values for an already-identified property.
+ * Property *identity* (parcel ID, GEO ID, situs address, legal
+ * description) never varies by year and lives on AppraisalPropertyCandidate
+ * / AppraisalPropertyRecord — this is deliberately a separate, narrower
+ * shape so a valuation-year lookup can never be mistaken for, or
+ * accidentally overwrite, the resolved property itself.
+ */
+export interface AppraisalValueYear {
+  taxYear: number;
+  landValueCents: number | null;
+  improvementValueCents: number | null;
+  appraisedValueCents: number | null;
+  assessedValueCents: number | null;
+  marketValueCents: number | null;
+  /** True/false when the source distinguishes certified vs. working/uncertified values for the year (e.g. Hidalgo CAD's own `valueReady` flag); null when the source doesn't expose this. */
+  certified: boolean | null;
+  /** True when at least one value field above is a real number — kept explicit rather than making callers infer it, since "certified" and "populated" aren't always the same thing. */
+  populated: boolean;
+  sourceUrl: string;
+  retrievedAt: string;
+}
+
 export interface AppraisalSourceAccessMetadata {
   officialApiAvailable: boolean;
   bulkDataAvailable: boolean;
@@ -327,6 +350,16 @@ export interface CountyAppraisalAdapter {
   searchProperties(query: AppraisalPropertySearchQuery, budget?: AppraisalRequestBudget): Promise<AppraisalPropertyCandidate[]>;
   getPropertyDetails(sourcePropertyId: string): Promise<AppraisalPropertyRecord>;
   getAccessMetadata(): Promise<AppraisalSourceAccessMetadata>;
+  /**
+   * Optional: for an already-identified property, looks up annual values
+   * starting at the source's current appraisal year and working backward
+   * only while values are unpopulated/uncertified, up to a small
+   * configurable limit (see HidalgoCountyAppraisalAdapter's use of
+   * HIDALGO_CAD_VALUATION_YEAR_LOOKBACK). Never re-resolves or changes
+   * which property was selected -- valuation-only. Omitted by adapters
+   * (e.g. the fixture Mock) that don't need year-lookback behavior.
+   */
+  getValuationHistory?(sourcePropertyId: string, options?: { maxYearsBack?: number; budget?: AppraisalRequestBudget }): Promise<AppraisalValueYear[]>;
 }
 
 export type PropertyResolutionMethod =
