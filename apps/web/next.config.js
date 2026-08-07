@@ -27,17 +27,19 @@ const nextConfig = {
     // client) and pnpm's default nested virtual store (node_modules/.pnpm/
     // @prisma+client@<version>/node_modules/.prisma/client) -- which layout
     // actually applies varies by build environment. The same applies to
-    // @napi-rs/canvas's platform-specific native binary and pdfjs-dist's
-    // wasm/ directory (only reachable via a runtime require.resolve(), which
-    // static tracing can't follow either).
+    // @napi-rs/canvas's platform-specific native binary is only reachable
+    // via a runtime import, which static tracing can't follow. pdfjs-dist's
+    // wasm/ assets are NOT traced from node_modules at all (that path
+    // guessing proved unreliable across pnpm layouts — see pdfRender.ts);
+    // they're vendored into county-adapters' own source tree instead, so
+    // this only needs to trace that one stable, monorepo-relative path.
     outputFileTracingIncludes: {
       "/**": [
         "../../node_modules/.prisma/client/libquery_engine-*.so.node",
         "../../node_modules/.pnpm/@prisma+client@*/node_modules/.prisma/client/libquery_engine-*.so.node",
         "../../node_modules/@napi-rs/canvas-linux-x64-gnu/*.node",
         "../../node_modules/.pnpm/@napi-rs+canvas-linux-x64-gnu@*/node_modules/@napi-rs/canvas-linux-x64-gnu/*.node",
-        "../../node_modules/pdfjs-dist/wasm/*",
-        "../../node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/wasm/*",
+        "../../packages/county-adapters/src/hidalgo/vendor/pdfjs-wasm/*",
       ],
     },
   },

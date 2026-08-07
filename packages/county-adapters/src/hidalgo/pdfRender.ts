@@ -1,5 +1,6 @@
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
+import { pathToFileURL, fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { createCanvas, DOMMatrix, Path2D } from "@napi-rs/canvas";
 
 /**
@@ -18,21 +19,42 @@ if (!(globalThis as unknown as { Path2D?: unknown }).Path2D) {
   (globalThis as unknown as { Path2D: unknown }).Path2D = Path2D;
 }
 
-const nodeRequire = createRequire(import.meta.url);
 let cachedWasmDirUrl: string | null = null;
 
-function wasmDirUrl(): string {
-  if (!cachedWasmDirUrl) {
-    // Built from concatenated parts rather than a single string literal so
-    // bundlers (Next.js/webpack in particular) don't statically recognize
-    // this as `require.resolve("pdfjs-dist/wasm/jbig2.wasm")` and try to
-    // parse the target .wasm file as a JS module while building the graph.
-    // This must stay a real, unbundled Node require.resolve() at runtime
-    // so it returns an actual filesystem path, not a bundler module id.
-    const target = ["pdfjs-dist", "wasm", "jbig2" + ".wasm"].join("/");
-    const jbig2WasmPath = nodeRequire.resolve(target);
-    cachedWasmDirUrl = pathToFileURL(jbig2WasmPath.replace(/jbig2\.wasm$/, "")).href;
+/**
+ * These wasm/fallback-js files are vendored into this package's own source
+ * tree (./vendor/pdfjs-wasm/, copied from pdfjs-dist/wasm/) rather than
+ * resolved from node_modules at runtime. Two earlier approaches failed on
+ * Netlify specifically:
+ *  - `require.resolve("pdfjs-dist/wasm/jbig2.wasm")` as a literal string
+ *    made webpack try to parse the binary .wasm file while building its
+ *    module graph ("Module parse failed").
+ *  - Obfuscating that same call from webpack's static analysis (so it
+ *    stayed a real runtime require.resolve()) then failed at runtime with
+ *    "Cannot find module" — Next's output-file-tracing guesses for the
+ *    pnpm-layout-dependent node_modules/pdfjs-dist/wasm path didn't match
+ *    what actually got deployed.
+ * Vendoring avoids guessing entirely: the files are ordinary tracked
+ * source, `outputFileTracingIncludes` in next.config.js points at their
+ * exact monorepo-relative path, and Netlify's traced function bundle
+ * preserves that same relative layout under its working directory (the
+ * same pattern already relied on for Prisma's native query engine).
+ */
+function vendorWasmDirUrl(): string {
+  if (cachedWasmDirUrl) return cachedWasmDirUrl;
+
+  const relativePath = "packages/county-adapters/src/hidalgo/vendor/pdfjs-wasm";
+  const candidates = [
+    join(process.cwd(), relativePath),
+    join(process.cwd(), "..", relativePath),
+    join(dirname(fileURLToPath(import.meta.url)), "vendor/pdfjs-wasm"),
+  ];
+
+  const found = candidates.find((dir) => existsSync(join(dir, "jbig2.wasm")));
+  if (!found) {
+    throw new Error(`Could not locate vendored pdfjs-dist wasm assets. Tried: ${candidates.join(", ")}`);
   }
+  cachedWasmDirUrl = pathToFileURL(found + "/").href;
   return cachedWasmDirUrl;
 }
 
@@ -46,7 +68,7 @@ export async function loadPdf(pdfBytes: Buffer): Promise<LoadedPdf> {
   const doc = await pdfjsLib.getDocument({
     data: new Uint8Array(pdfBytes),
     useSystemFonts: true,
-    wasmUrl: wasmDirUrl(),
+    wasmUrl: vendorWasmDirUrl(),
   } as Parameters<typeof pdfjsLib.getDocument>[0]).promise;
 
   return {
