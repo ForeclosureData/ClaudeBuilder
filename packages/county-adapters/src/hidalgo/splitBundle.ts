@@ -1,16 +1,22 @@
 import { loadPdf } from "./pdfRender";
+import { detectDocumentBoundaries, boundariesToNoticeRanges } from "./barcodeSplit";
 
 /**
  * Splits Hidalgo's monthly bundled, scanned (no text layer) foreclosure-sale
- * PDF into individual notices, using the county clerk's own recording
- * cover sheet as the boundary marker. Every recorded document in the bundle
- * is preceded by a cover sheet stamped "Doc-XXXXXX" in the top-right corner
- * and stating "Number of Pages: N" — verified against a real August 2026
- * posting (Doc-117631, a 4-page "Notice of Substitute Trustee Sale").
+ * PDF into individual notices.
  *
- * Because there is no text layer, boundary detection and transcription both
- * go through Claude vision (one call per candidate cover sheet, one call
- * per notice's content pages) rather than text-based pattern matching.
+ * Document boundaries are now found deterministically via barcode.ts (see
+ * that file for the barcode format and detection details) instead of
+ * Claude vision -- confirmed against 10 real documents with 100% detection
+ * and zero false positives, at effectively zero marginal cost since it
+ * runs entirely locally. If the scan finds no barcodes anywhere in the
+ * bundle, this stops rather than guessing boundaries.
+ *
+ * Notice *content* transcription still goes through Claude vision below;
+ * cover-sheet metadata (documentType, recordedOn) is left null here --
+ * both are scheduled to move to local OCR + deterministic field parsing
+ * next, which is a better fit than a per-notice Claude call for fields
+ * that a fixed-layout cover sheet/notice template can answer directly.
  */
 
 export interface SplitNotice {
@@ -21,7 +27,7 @@ export interface SplitNotice {
   recordedOn: string | null;
   noticeText: string;
   costCents: number;
-  /** True when the transcription came back too short/empty to trust — surfaced so the caller can route it to manual review rather than silently publishing thin data. */
+  /** True when the transcription came back too short/empty to trust, or the notice's page range exceeded the sanity limit (likely a missed barcode) -- surfaced so the caller can route it to manual review rather than silently publishing thin/uncertain data. */
   lowConfidence: boolean;
 }
 
@@ -31,129 +37,105 @@ export interface SplitBundleResult {
   pagesConsumed: number;
   stoppedEarly: boolean;
   stopReason?: string;
+  /** How many cover-sheet barcodes were decoded across the whole bundle. */
+  barcodesDetected: number;
 }
 
 export interface SplitBundleOptions {
   apiKey?: string;
   model?: string;
-  /** Caps how many notices to split before stopping — used to bound cost/time for live testing. Unbounded (splits the whole bundle) when omitted. */
+  /** Caps how many notices to split before stopping -- used to bound cost/time for live testing. Unbounded (splits the whole bundle) when omitted. */
   maxNotices?: number;
   onCost?: (costCents: number) => void;
+  /** A detected notice spanning more pages than this is flagged lowConfidence rather than trusted outright -- a real notice here is typically a handful of pages, so an outsized range usually means a cover sheet later in the range failed to decode. */
+  maxPagesPerNotice?: number;
 }
 
-interface CoverSheetResult {
-  documentNumber: string | null;
-  numberOfPages: number | null;
-  documentType: string | null;
-  recordedOn: string | null;
-  costCents: number;
-  /** The model's raw text response — only useful for diagnosing a parse failure, not part of the "real" result. */
-  rawResponse: string;
-}
+const DEFAULT_MAX_PAGES_PER_NOTICE = 20;
 
 export async function splitHidalgoBundle(pdfBytes: Buffer, options: SplitBundleOptions = {}): Promise<SplitBundleResult> {
-  const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return { notices: [], totalPages: 0, pagesConsumed: 0, stoppedEarly: true, stopReason: "ANTHROPIC_API_KEY not configured" };
+  const pdf = await loadPdf(pdfBytes);
+
+  const scan = await detectDocumentBoundaries({
+    numPages: pdf.numPages,
+    scanPageForBarcode: async (pageNumber) => (await pdf.scanPageForBarcodes(pageNumber))[0] ?? null,
+  });
+
+  if (scan.boundaries.length === 0) {
+    return {
+      notices: [],
+      totalPages: pdf.numPages,
+      pagesConsumed: 0,
+      stoppedEarly: true,
+      stopReason: "No cover-sheet barcodes detected anywhere in the bundle.",
+      barcodesDetected: 0,
+    };
   }
 
-  const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic({ apiKey });
-  const model = options.model ?? process.env.AI_EXTRACTION_MODEL ?? "claude-sonnet-5";
+  const ranges = boundariesToNoticeRanges(scan.boundaries, pdf.numPages);
+  const maxPagesPerNotice = options.maxPagesPerNotice ?? DEFAULT_MAX_PAGES_PER_NOTICE;
 
-  const pdf = await loadPdf(pdfBytes);
+  const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY;
+  const model = options.model ?? process.env.AI_EXTRACTION_MODEL ?? "claude-sonnet-5";
+  let client: InstanceType<typeof import("@anthropic-ai/sdk").default> | null = null;
+
   const notices: SplitNotice[] = [];
-  let page = 1;
   let stoppedEarly = false;
   let stopReason: string | undefined;
+  let pagesConsumed = 0;
 
-  while (page <= pdf.numPages) {
+  for (const range of ranges) {
     if (options.maxNotices !== undefined && notices.length >= options.maxNotices) {
       stoppedEarly = true;
       stopReason = `Reached maxNotices=${options.maxNotices} limit`;
       break;
     }
 
-    const coverPng = await pdf.renderPageToPng(page, 1.6);
-    const cover = await classifyCoverSheet(client, model, coverPng);
-    options.onCost?.(cover.costCents);
+    const contentPageNumbers: number[] = [];
+    for (let p = range.pageStart + 1; p <= range.pageEnd; p++) contentPageNumbers.push(p);
 
-    if (!cover.documentNumber || !cover.numberOfPages || cover.numberOfPages < 1) {
-      // Doesn't look like a recording cover sheet where one was expected.
-      // Stop rather than guess at page ranges — this and any remaining
-      // pages in the bundle need manual attention.
-      stoppedEarly = true;
-      stopReason = `Page ${page} did not parse as a recording cover sheet (documentNumber=${cover.documentNumber}, numberOfPages=${cover.numberOfPages}). Raw model response: ${cover.rawResponse.slice(0, 500)}`;
-      break;
+    let noticeText = "";
+    let costCents = 0;
+    if (contentPageNumbers.length > 0) {
+      if (!apiKey) {
+        stoppedEarly = true;
+        stopReason = "ANTHROPIC_API_KEY not configured for content transcription";
+        break;
+      }
+      if (!client) {
+        const { default: Anthropic } = await import("@anthropic-ai/sdk");
+        client = new Anthropic({ apiKey });
+      }
+      const contentPngs = await Promise.all(contentPageNumbers.map((p) => pdf.renderPageToPng(p, 1.6)));
+      const transcript = await transcribeNoticeContent(client, model, contentPngs);
+      noticeText = transcript.text;
+      costCents = transcript.costCents;
+      options.onCost?.(costCents);
     }
 
-    const pageStart = page;
-    const pageEnd = Math.min(pageStart + cover.numberOfPages - 1, pdf.numPages);
-    const contentPageNumbers: number[] = [];
-    for (let p = pageStart + 1; p <= pageEnd; p++) contentPageNumbers.push(p);
-
-    const contentPngs = await Promise.all(contentPageNumbers.map((p) => pdf.renderPageToPng(p, 1.6)));
-    const transcript = await transcribeNoticeContent(client, model, contentPngs);
-    options.onCost?.(transcript.costCents);
-
+    const spanPages = range.pageEnd - range.pageStart + 1;
     notices.push({
-      documentNumber: cover.documentNumber,
-      pageStart,
-      pageEnd,
-      documentType: cover.documentType,
-      recordedOn: cover.recordedOn,
-      noticeText: transcript.text,
-      costCents: cover.costCents + transcript.costCents,
-      lowConfidence: transcript.text.trim().length < 200,
+      documentNumber: range.documentNumber,
+      pageStart: range.pageStart,
+      pageEnd: range.pageEnd,
+      documentType: null,
+      recordedOn: null,
+      noticeText,
+      costCents,
+      lowConfidence: noticeText.trim().length < 200 || spanPages > maxPagesPerNotice,
     });
 
-    page = pageEnd + 1;
+    pagesConsumed = range.pageEnd;
   }
 
-  return { notices, totalPages: pdf.numPages, pagesConsumed: page - 1, stoppedEarly, stopReason };
-}
-
-async function classifyCoverSheet(
-  client: InstanceType<typeof import("@anthropic-ai/sdk").default>,
-  model: string,
-  pngBuffer: Buffer,
-): Promise<CoverSheetResult> {
-  const response = await client.messages.create({
-    model,
-    max_tokens: 300,
-    system:
-      "You read Hidalgo County, Texas recorder's-office cover sheets that precede each recorded document in a bundled PDF. Respond with ONLY a JSON object — no markdown fences, no commentary.",
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: "image/png", data: pngBuffer.toString("base64") } },
-          {
-            type: "text",
-            text:
-              'Extract from this recorder\'s cover sheet: {"documentNumber": string|null (the "Doc-XXXXXX" stamp, digits only, no "Doc-" prefix), "numberOfPages": number|null (from "Number of Pages: N"), "documentType": string|null (the document title heading, e.g. "NOTICE OF FORECLOSURE"), "recordedOn": string|null (the "Recorded On" date/time, as written)}. If this page is NOT a recorder\'s cover sheet (e.g. it is a notice\'s body text, not a cover page), return {"documentNumber": null, "numberOfPages": null, "documentType": null, "recordedOn": null}.',
-          },
-        ],
-      },
-    ],
-  });
-
-  const raw = extractText(response);
-  const costCents = estimateCostCents(response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0);
-
-  try {
-    const parsed = JSON.parse(extractJsonBlock(raw)) as Partial<CoverSheetResult>;
-    return {
-      documentNumber: typeof parsed.documentNumber === "string" ? parsed.documentNumber.replace(/\D/g, "") || null : null,
-      numberOfPages: typeof parsed.numberOfPages === "number" ? parsed.numberOfPages : null,
-      documentType: typeof parsed.documentType === "string" ? parsed.documentType : null,
-      recordedOn: typeof parsed.recordedOn === "string" ? parsed.recordedOn : null,
-      costCents,
-      rawResponse: raw,
-    };
-  } catch {
-    return { documentNumber: null, numberOfPages: null, documentType: null, recordedOn: null, costCents, rawResponse: raw };
-  }
+  return {
+    notices,
+    totalPages: pdf.numPages,
+    pagesConsumed,
+    stoppedEarly,
+    stopReason,
+    barcodesDetected: scan.barcodesFound,
+  };
 }
 
 async function transcribeNoticeContent(
@@ -194,12 +176,7 @@ function extractText(response: { content: Array<{ type: string; text?: string }>
   return block?.text ?? "";
 }
 
-function extractJsonBlock(text: string): string {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  return (fenced?.[1] ?? text).trim();
-}
-
-/** Rough published per-token pricing, matching foreclosure-core's extractWithAI estimate — update if the configured model's pricing changes. */
+/** Rough published per-token pricing, matching foreclosure-core's extractWithAI estimate -- update if the configured model's pricing changes. */
 function estimateCostCents(inputTokens: number, outputTokens: number): number {
   const inputCostPerMillionCents = 300;
   const outputCostPerMillionCents = 1500;

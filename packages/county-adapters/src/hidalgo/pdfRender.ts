@@ -16,13 +16,28 @@
  * ships as a single self-contained WASM blob with no separate fallback/
  * worker files to route around bundlers, which was the recurring source
  * of packaging failures in the earlier implementation.
+ *
+ * Also exposes barcode scanning (scanPageForBarcodes) for deterministic
+ * document-boundary detection -- see ./barcodeSplit.ts. Barcode scanning
+ * renders at a higher scale (3.0, ~275 DPI) than the 1.6 (~150 DPI) used
+ * for content PNGs: testing against the real bundle found zbar-wasm
+ * detects zero symbols at 1.6 (bars too thin to resolve) but decodes
+ * reliably at 3.0+. Each scan does its own render-and-destroy pixmap
+ * rather than reusing one from renderPageToPng, because calling mupdf
+ * again (e.g. asPNG()) after getPixels() can grow/realloc its WASM heap
+ * and detach the previously-returned pixel view.
  */
 import * as mupdf from "mupdf";
+import { scanGrayBuffer } from "@undecaf/zbar-wasm";
 
 export interface LoadedPdf {
   numPages: number;
   renderPageToPng(pageNumber: number, scale?: number): Promise<Buffer>;
+  /** Decodes any barcodes present on the page (1-indexed) and returns their decoded text, in the order zbar reports them. Empty array if none found. */
+  scanPageForBarcodes(pageNumber: number, scale?: number): Promise<string[]>;
 }
+
+const BARCODE_SCAN_SCALE = 3.0;
 
 export async function loadPdf(pdfBytes: Buffer): Promise<LoadedPdf> {
   const doc = mupdf.Document.openDocument(pdfBytes, "application/pdf");
@@ -36,6 +51,24 @@ export async function loadPdf(pdfBytes: Buffer): Promise<LoadedPdf> {
       const pixmap = page.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceRGB, false, true);
       try {
         return Buffer.from(pixmap.asPNG());
+      } finally {
+        pixmap.destroy();
+        page.destroy();
+      }
+    },
+    async scanPageForBarcodes(pageNumber: number, scale = BARCODE_SCAN_SCALE): Promise<string[]> {
+      const page = doc.loadPage(pageNumber - 1);
+      const pixmap = page.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceGray, false, true);
+      try {
+        const width = pixmap.getWidth();
+        const height = pixmap.getHeight();
+        const samples = pixmap.getPixels();
+        // .buffer is the pixmap's *entire* backing WASM heap, not scoped to
+        // this view -- must slice to the view's own byte range or zbar-wasm
+        // rejects it with a width/height mismatch.
+        const buf = samples.buffer.slice(samples.byteOffset, samples.byteOffset + samples.byteLength) as ArrayBuffer;
+        const symbols = await scanGrayBuffer(buf, width, height);
+        return symbols.map((s) => s.decode());
       } finally {
         pixmap.destroy();
         page.destroy();
