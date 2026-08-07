@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { prisma } from "@foreclosuredata/database";
+import { prisma, type Prisma } from "@foreclosuredata/database";
 import {
   DocumentProcessingStatus,
   DocumentType,
@@ -20,9 +20,11 @@ import {
   parseLegalDescription,
   detectStatedPropertyAddress,
   generateForeclosureSummary,
+  estimateRemainingBalance,
   type ResolutionInput,
   type RequestBudget,
 } from "@foreclosuredata/foreclosure-core";
+import type { AppraisalValueYear } from "@foreclosuredata/types";
 import { getCountyAppraisalAdapter } from "../appraisal";
 
 export interface NoticeReportEntry {
@@ -340,6 +342,11 @@ async function processSingleNotice(params: {
 
   const cadBudget: RequestBudget = { remaining: Number(process.env.HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE ?? 10) };
   const resolution = await resolvePropertyAddress(resolutionInput, params.appraisalAdapter, undefined, cadBudget);
+  // The candidate the resolver already confidently selected -- either as
+  // the resolution method itself (no notice address) or as enrichment for
+  // an explicit-stated-address case. Never re-decided here; this function
+  // only persists what resolver.ts + scoring.ts already determined.
+  const selectedCandidate = resolution.selectedCandidate;
 
   const grantorName = (extracted.grantorNames.value ?? extracted.borrowerNames.value ?? []).join(", ") || "Unknown owner";
   const grantor = await prisma.person.create({ data: { fullName: grantorName } });
@@ -353,9 +360,19 @@ async function processSingleNotice(params: {
       data: {
         countyId: county.id,
         propertyStreetAddress: resolution.address.resolvedAddress,
-        subdivision: legalDescription?.subdivision ?? null,
-        lot: legalDescription?.lot ?? null,
-        block: legalDescription?.block ?? null,
+        // CAD-verified identity fields (from the already-selected candidate)
+        // take priority over the notice's own transcribed legal description
+        // when both exist -- the CAD record is the authoritative source for
+        // parcel/geo IDs and is at least as reliable for subdivision/lot/
+        // block. Never invents these when there's no selected candidate.
+        subdivision: selectedCandidate?.subdivision ?? legalDescription?.subdivision ?? null,
+        lot: selectedCandidate?.lot ?? legalDescription?.lot ?? null,
+        block: selectedCandidate?.block ?? legalDescription?.block ?? null,
+        acreage: selectedCandidate?.acreage ?? null,
+        propertyIdNumber: selectedCandidate?.parcelId ?? null,
+        geographicId: selectedCandidate?.geographicId ?? null,
+        latitude: selectedCandidate?.latitude ?? null,
+        longitude: selectedCandidate?.longitude ?? null,
         propertyType: "UNKNOWN",
         classification: PropertyClassification.UNKNOWN,
         addressResolutionMethod: resolution.address.addressResolutionMethod as never,
@@ -367,6 +384,21 @@ async function processSingleNotice(params: {
 
   const manualReviewReasons = [...pipelineResult.manualReviewReasons];
   if (!property) manualReviewReasons.push("NO_ADDRESS_RESOLVED");
+  // The address itself is fine (explicit-stated-address cases always are),
+  // but the CAD returned candidates for this notice's legal description/
+  // owner that couldn't be confidently attached as enrichment (ambiguous
+  // set, conflicting lot, or a conflicting current owner) -- surface it for
+  // human review rather than silently publishing without county data.
+  if (property && !selectedCandidate && resolution.candidates.length > 0) manualReviewReasons.push("MULTIPLE_APPRAISAL_MATCHES");
+
+  // extracted.*.value is expressed in whole dollars (see texasTemplates.ts,
+  // which divides its internal cents figure by 100 before wrapping it as an
+  // ExtractedValue) -- every *Cents column below needs the *100 back. A
+  // previous version of this function passed the dollar figure straight
+  // into *Cents fields/params, understating every stored and summarized
+  // amount by 100x; fixed here.
+  const originalPrincipalCents = extracted.originalPrincipalAmount.value !== null ? Math.round(extracted.originalPrincipalAmount.value * 100) : null;
+  const statedCurrentBalanceCents = extracted.currentPrincipalBalance.value !== null ? Math.round(extracted.currentPrincipalBalance.value * 100) : null;
 
   const fc = await prisma.foreclosureCase.create({
     data: {
@@ -387,8 +419,8 @@ async function processSingleNotice(params: {
         borrowerName: grantorName,
         lenderName,
         originalLoanDateIso: extracted.deedOfTrustDate.value,
-        originalPrincipalCents: extracted.originalPrincipalAmount.value,
-        currentBalanceStatedCents: extracted.currentPrincipalBalance.value,
+        originalPrincipalCents,
+        currentBalanceStatedCents: statedCurrentBalanceCents,
         addressResolutionMethod: resolution.address.addressResolutionMethod as never,
       }),
       lastVerifiedAt: new Date(),
@@ -431,15 +463,29 @@ async function processSingleNotice(params: {
     });
   }
 
+  // Only estimate a remaining balance when the notice didn't already state
+  // one and there's enough to model from (original principal + the deed of
+  // trust date) -- never fabricated from partial data, and never confused
+  // with the original principal itself.
+  const balanceEstimate =
+    statedCurrentBalanceCents === null && originalPrincipalCents !== null && extracted.deedOfTrustDate.value
+      ? estimateRemainingBalance({ originalPrincipalCents, originalLoanDateIso: extracted.deedOfTrustDate.value })
+      : null;
+
   await prisma.loan.create({
     data: {
       foreclosureCaseId: fc.id,
       originalLenderOrgId: currentOrg.id,
       currentMortgageeOrgId: currentOrg.id,
-      originalPrincipalAmountCents: extracted.originalPrincipalAmount.value,
+      originalPrincipalAmountCents: originalPrincipalCents,
       deedOfTrustDate: extracted.deedOfTrustDate.value ? new Date(extracted.deedOfTrustDate.value) : null,
       instrumentNumber: extracted.instrumentNumber.value,
       recordingDate: extracted.recordingDate.value ? new Date(extracted.recordingDate.value) : null,
+      currentPrincipalBalanceCents: statedCurrentBalanceCents,
+      estimatedRemainingBalanceCents: balanceEstimate?.estimatedRemainingBalanceCents ?? null,
+      remainingBalanceMethodology: balanceEstimate?.methodology ?? null,
+      remainingBalanceConfidence: balanceEstimate?.confidence ?? null,
+      remainingBalanceAssumptions: (balanceEstimate?.assumptions as Prisma.InputJsonValue | undefined) ?? undefined,
     },
   });
 
@@ -468,6 +514,91 @@ async function processSingleNotice(params: {
         block: legalDescription.block,
       },
     });
+  }
+
+  // Persist every CAD candidate the resolver gathered (not just the
+  // selected one) -- same shape /admin/property-resolution's own
+  // "search again" action already writes, so a case that needs manual
+  // review shows real ingestion-time candidates/scoring immediately,
+  // without a human having to trigger a live re-search first.
+  if (resolution.candidates.length > 0) {
+    await prisma.appraisalPropertyCandidate.createMany({
+      data: resolution.candidates.map((c) => ({
+        foreclosureCaseId: fc.id,
+        countyAppraisalSourceKey: params.appraisalAdapter.countyCode,
+        sourcePropertyId: c.sourcePropertyId,
+        sourceUrl: c.sourceUrl ?? null,
+        ownerName: c.ownerName,
+        situsAddress: c.situsAddress,
+        city: c.city,
+        zipCode: c.zipCode,
+        parcelId: c.parcelId,
+        geographicId: c.geographicId,
+        legalDescription: c.legalDescription,
+        subdivision: c.subdivision,
+        lot: c.lot,
+        block: c.block,
+        acreage: c.acreage,
+        classification: c.classification,
+        landValueCents: c.landValueCents,
+        improvementValueCents: c.improvementValueCents,
+        appraisedValueCents: c.appraisedValueCents,
+        assessedValueCents: c.assessedValueCents,
+        marketValueCents: c.marketValueCents,
+        homestead: c.homestead,
+        taxYear: c.taxYear,
+        latitude: c.latitude,
+        longitude: c.longitude,
+        isSelected: c.sourcePropertyId === selectedCandidate?.sourcePropertyId,
+      })),
+    });
+    await prisma.propertyResolutionAttempt.create({
+      data: {
+        foreclosureCaseId: fc.id,
+        resolutionMethod: resolution.address.addressResolutionMethod as never,
+        confidence: resolution.resolution.confidence,
+        explanation: resolution.resolution.explanation,
+        matchedFields: resolution.resolution.matchedFields,
+        conflictingFields: resolution.resolution.conflictingFields,
+        candidateCount: resolution.resolution.candidateCount,
+        requiresManualReview: resolution.resolution.requiresManualReview,
+        selectedCandidateId: resolution.resolution.selectedCandidateId,
+      },
+    });
+  }
+
+  // Annual county values for the selected property -- only years the CAD
+  // actually returned populated data for (see getValuationHistory's
+  // year-walkback). Upserted rather than blindly created so a re-run
+  // never duplicates a row for the same (property, taxYear), and a
+  // certified year's values are never touched once written -- the update
+  // branch below writes the identical figures back, so nothing is ever
+  // silently overwritten with different data for an already-certified year.
+  if (property && selectedCandidate && typeof params.appraisalAdapter.getValuationHistory === "function") {
+    let valuationYears: AppraisalValueYear[] = [];
+    try {
+      valuationYears = await params.appraisalAdapter.getValuationHistory(selectedCandidate.sourcePropertyId, { budget: cadBudget });
+    } catch {
+      // Valuation lookup is best-effort enrichment -- a failure here must
+      // never fail the whole notice's ingestion.
+    }
+    for (const year of valuationYears.filter((y) => y.populated)) {
+      const historyData = {
+        taxYear: year.taxYear,
+        landValueCents: year.landValueCents,
+        improvementValueCents: year.improvementValueCents,
+        appraisedValueCents: year.appraisedValueCents,
+        assessedValueCents: year.assessedValueCents,
+        marketValueCents: year.marketValueCents,
+        certified: year.certified,
+        sourceUrl: year.sourceUrl,
+      };
+      await prisma.appraisalValueHistory.upsert({
+        where: { propertyId_taxYear: { propertyId: property.id, taxYear: year.taxYear } },
+        create: { propertyId: property.id, ...historyData },
+        update: historyData,
+      });
+    }
   }
 
   for (const reason of manualReviewReasons) {

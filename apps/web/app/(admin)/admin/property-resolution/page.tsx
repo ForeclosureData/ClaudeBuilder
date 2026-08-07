@@ -464,6 +464,9 @@ export default async function PropertyResolutionPage() {
                   <p className="mt-2 text-sm font-medium text-neutral-900 dark:text-neutral-50">
                     {fc.county.name} County &middot; Owner: {ownerNames}
                   </p>
+                  <p className="text-sm text-neutral-500">
+                    Notice-stated address: {fc.property?.propertyStreetAddress ?? "None stated in notice"}
+                  </p>
                   <p className="mt-1 text-sm text-neutral-500">{legal?.rawText ?? fc.property?.legalDescription ?? "No legal description recorded."}</p>
                   {originalNotice && (
                     <Link href={originalNotice.documentUrl} target="_blank" className="mt-1 inline-block text-xs text-brand-600 underline dark:text-brand-400">
@@ -496,8 +499,14 @@ export default async function PropertyResolutionPage() {
                         <p className="text-neutral-500">
                           {c.ownerName ?? "Unknown owner"} &middot; {c.subdivision ?? "—"} Lot {c.lot ?? "—"} Blk {c.block ?? "—"} &middot;{" "}
                           {formatCurrencyCents(c.appraisedValueCents)}
+                          {c.taxYear ? ` (${c.taxYear})` : ""}
                         </p>
                         <p className="mt-1 text-xs text-neutral-400">{explainMatch(c.matchedFields, c.conflictingFields)}</p>
+                        {c.sourceUrl && (
+                          <Link href={c.sourceUrl} target="_blank" className="mt-1 inline-block text-xs text-brand-600 underline dark:text-brand-400">
+                            View on {fc.county.name} CAD
+                          </Link>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         {c.score !== null && <Badge tone={c.score >= 0.7 ? "success" : c.score >= 0.4 ? "warning" : "danger"}>{Math.round(c.score * 100)}%</Badge>}

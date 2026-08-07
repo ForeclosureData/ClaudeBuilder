@@ -170,7 +170,7 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
                     <p className="mt-2 text-xs text-neutral-500">{EQUITY_DISCLOSURE}</p>
                   </>
                 ) : (
-                  <p className="mt-0.5 text-neutral-900 dark:text-neutral-50">Unknown</p>
+                  <p className="mt-0.5 text-neutral-900 dark:text-neutral-50">Estimated Equity unavailable</p>
                 )}
               </div>
             </CardContent>
