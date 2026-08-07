@@ -1,14 +1,15 @@
 import { promises as dns } from "node:dns";
 import { NextResponse } from "next/server";
-import { prisma } from "@foreclosuredata/database";
-import { getCurrentProfileId } from "@/lib/supabase/server";
 
 export const maxDuration = 60;
 
 /**
  * TEMPORARY diagnostic — per product instruction, this must be run once
  * from the deployed runtime and then removed (the route file deleted),
- * not left publicly reachable. Admin-session-gated in the meantime.
+ * not left publicly reachable. Gated behind the same shared secret as the
+ * internal ingestion trigger (nobody but whoever holds that secret can
+ * reach this) rather than an admin browser session, since this is meant to
+ * be run once via a single authenticated curl call, not through the UI.
  *
  * Sends the smallest possible number of requests (DNS lookup + a handful
  * of GETs) against the two Hidalgo CAD hosts, with a normal application
@@ -46,11 +47,12 @@ interface HostDiagnostic {
   searchPage: HttpCheckResult;
 }
 
-export async function GET() {
-  const profileId = await getCurrentProfileId();
-  if (!profileId) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
-  const profile = await prisma.profile.findUnique({ where: { id: profileId } });
-  if (!profile || profile.role !== "ADMIN") return NextResponse.json({ error: "Admin access required." }, { status: 403 });
+export async function GET(request: Request) {
+  const secret = process.env.INTERNAL_INGEST_SECRET;
+  const authHeader = request.headers.get("authorization");
+  if (!secret || authHeader !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   const results: HostDiagnostic[] = [];
   for (const target of TARGETS) {
