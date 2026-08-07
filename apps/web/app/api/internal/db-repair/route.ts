@@ -1,15 +1,26 @@
 import { NextResponse } from "next/server";
+import { prisma } from "@foreclosuredata/database";
 
 /**
- * Retired. This was a temporary, one-time schema-drift repair (already
- * run — production is confirmed in sync, see the conversation) that had
- * to be neutered in place rather than deleted: this Netlify site's
- * upload-based deploy appears to reuse previously-uploaded function
- * bundles for files it doesn't detect as changed, so a plain file
- * deletion did not actually remove the route from what's served. Kept as
- * an always-410 stub so whatever gets served here can never run raw SQL
- * again.
+ * TEMPORARY, reactivated once more to reset a specific stale
+ * IngestedNoticeBundle row: an early live probe (before the
+ * bounded-run-shouldn't-mark-SPLIT_COMPLETE fix existed) marked the
+ * August 2026 bundle SPLIT_COMPLETE with splitSuccessCount 0, which now
+ * incorrectly short-circuits every retry via the bundleSha256-match skip
+ * check. Resets it to SPLITTING so the next run actually reprocesses it.
+ * Re-neutered to a 410 stub immediately after this one use.
  */
-export async function POST() {
-  return NextResponse.json({ error: "Gone" }, { status: 410 });
+export async function POST(request: Request) {
+  const secret = process.env.INTERNAL_INGEST_SECRET;
+  const authHeader = request.headers.get("authorization");
+  if (!secret || authHeader !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const updated = await prisma.ingestedNoticeBundle.updateMany({
+    where: { adapterKey: "hidalgo", status: "SPLIT_COMPLETE", splitSuccessCount: 0 },
+    data: { status: "SPLITTING" },
+  });
+
+  return NextResponse.json({ resetCount: updated.count });
 }

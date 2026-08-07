@@ -206,15 +206,29 @@ export async function ingestForeclosureNotices(
       }
     }
 
-    await prisma.ingestedNoticeBundle.update({
-      where: { id: bundleRecord.id },
-      data: {
-        status: IngestedBundleStatus.SPLIT_COMPLETE,
-        noticeCount: splitNotices.length,
-        splitSuccessCount: bounded.length,
-        processedAt: new Date(),
-      },
-    });
+    // A bounded/supervised test run (maxNoticesPerBundle set) only ever
+    // processes a prefix of the bundle — marking it SPLIT_COMPLETE would
+    // make the real unbounded run skip it later and silently leave the
+    // rest of the bundle unprocessed. Only the unbounded path (how the
+    // scheduler calls this) marks it complete; a bounded run leaves the
+    // bundle in SPLITTING so the next unbounded run reprocesses it (safe —
+    // already-persisted notices are still deduped by sha256Hash).
+    if (options.maxNoticesPerBundle === undefined) {
+      await prisma.ingestedNoticeBundle.update({
+        where: { id: bundleRecord.id },
+        data: {
+          status: IngestedBundleStatus.SPLIT_COMPLETE,
+          noticeCount: splitNotices.length,
+          splitSuccessCount: bounded.length,
+          processedAt: new Date(),
+        },
+      });
+    } else {
+      await prisma.ingestedNoticeBundle.update({
+        where: { id: bundleRecord.id },
+        data: { noticeCount: splitNotices.length, splitSuccessCount: bounded.length, lastCheckedAt: new Date() },
+      });
+    }
   }
 
   return summary;
