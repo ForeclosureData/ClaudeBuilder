@@ -45,8 +45,11 @@ function vendorWasmDirUrl(): string {
 
   const relativePath = "packages/county-adapters/src/hidalgo/vendor/pdfjs-wasm";
   const candidates = [
-    join(process.cwd(), relativePath),
+    // Confirmed via a live Netlify invocation: process.cwd() there is
+    // /var/task/apps/web, two levels below the traced-files root.
+    join(process.cwd(), "../..", relativePath),
     join(process.cwd(), "..", relativePath),
+    join(process.cwd(), relativePath),
     join(dirname(fileURLToPath(import.meta.url)), "vendor/pdfjs-wasm"),
   ];
 
