@@ -296,8 +296,8 @@ function matchesOwnerSurname(row: RawPropertyRow, surnameUpper: string): boolean
 }
 
 function acreageCloseEnough(row: RawPropertyRow, targetAcreage: number): boolean {
-  const rowAcreage = row.legalAcreage ?? row.effectiveSizeAcres;
-  return rowAcreage != null && Math.abs(rowAcreage - targetAcreage) < 0.05;
+  const rowAcreage = Number(row.legalAcreage ?? row.effectiveSizeAcres);
+  return Number.isFinite(rowAcreage) && Math.abs(rowAcreage - targetAcreage) < 0.05;
 }
 
 /** A row's lot/block, falling back to parsing them out of its legalDescription text when the API's own dedicated lot/block fields are null (observed live: sometimes populated, sometimes not, for the same subdivision). */

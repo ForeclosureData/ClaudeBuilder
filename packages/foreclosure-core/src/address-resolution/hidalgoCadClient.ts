@@ -141,10 +141,23 @@ async function getCurrentYear(): Promise<number> {
   });
 }
 
-/** Shape of a raw property row as returned by both /public/property/search and /public/property/searchfulltext -- confirmed by inspection of a live response. Only the fields this adapter actually uses are typed; the real response has more. Value fields are sometimes the literal string "N/A" rather than a number or null (confirmed live) -- toCents() below only accepts an actual number, so that case is treated the same as missing. */
+/**
+ * Shape of a raw property row as returned by both /public/property/search
+ * and /public/property/searchfulltext -- confirmed by inspection of a
+ * live response. Only the fields this adapter actually uses are typed;
+ * the real response has more. Value fields are sometimes the literal
+ * string "N/A" rather than a number or null (confirmed live) -- toCents()
+ * below only accepts an actual number, so that case is treated the same
+ * as missing. Separately, and confirmed live only when this client was
+ * exercised against Prisma's strict column typing (a plain JS numeric
+ * comparison never would have caught it): pYear/latitude/longitude come
+ * back as JSON strings (e.g. `"pYear": "2027"`), not numbers, despite
+ * looking identical to a number in every log/debug print -- toNumber()
+ * below coerces these before they ever reach a typed Int/Float column.
+ */
 export interface RawPropertyRow {
   pid: number | string;
-  pYear: number;
+  pYear: number | string;
   geoID: string | null;
   displayName: string | null;
   streetPrimary: string | null;
@@ -154,14 +167,14 @@ export interface RawPropertyRow {
   legalDescription: string | null;
   lot: string | null;
   block: string | null;
-  legalAcreage: number | null;
-  effectiveSizeAcres: number | null;
+  legalAcreage: number | string | null;
+  effectiveSizeAcres: number | string | null;
   marketValue: number | string | null;
   appraisedValue: number | string | null;
   landValue: number | string | null;
   improvementValue: number | string | null;
-  latitude: number | null;
-  longitude: number | null;
+  latitude: number | string | null;
+  longitude: number | string | null;
   propType: string | null;
   /** The portal's own certification/completeness flag for this row's year -- confirmed both empirically (0 for the not-yet-certified current year, 1 for prior certified years) and from the public client's own source, which renders `marketValue: e.valueReady ? e.marketValue : "N/A"`. Typed loosely since the API returns it as 0/1, not a real boolean. */
   valueReady?: number | boolean | null;
@@ -354,7 +367,7 @@ export function mapRowToCandidate(row: RawPropertyRow): AppraisalPropertyCandida
     subdivision: legalTokens?.subdivision ?? null,
     lot: row.lot ?? legalTokens?.lot ?? null,
     block: row.block ?? legalTokens?.block ?? null,
-    acreage: row.legalAcreage ?? row.effectiveSizeAcres ?? legalTokens?.acreage ?? null,
+    acreage: toNumber(row.legalAcreage) ?? toNumber(row.effectiveSizeAcres) ?? legalTokens?.acreage ?? null,
     classification: mapClassification(row.propType),
     landValueCents: toCents(row.landValue),
     improvementValueCents: toCents(row.improvementValue),
@@ -364,14 +377,33 @@ export function mapRowToCandidate(row: RawPropertyRow): AppraisalPropertyCandida
     marketValueCents: toCents(row.marketValue),
     // Not observed in the live response -- left null rather than guessed.
     homestead: null,
-    taxYear: row.pYear ?? null,
-    latitude: row.latitude ?? null,
-    longitude: row.longitude ?? null,
+    taxYear: toNumber(row.pYear),
+    latitude: toNumber(row.latitude),
+    longitude: toNumber(row.longitude),
   };
 }
 
+/**
+ * Coerces a value the CAD API may have sent as either a real JSON number
+ * or a numeric string (confirmed live: pYear/latitude/longitude always
+ * arrive as strings; value fields are usually numbers but sometimes the
+ * literal string "N/A") into an actual number, or null if it isn't one.
+ * Every numeric field this client hands to a Prisma Int/Float column goes
+ * through this rather than a bare `typeof value === "number"` check,
+ * which would silently drop legitimate numeric-string data.
+ */
+function toNumber(value: number | string | null | undefined): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function toCents(value: number | string | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) : null;
+  const num = toNumber(value);
+  return num !== null ? Math.round(num * 100) : null;
 }
 
 function mapClassification(propType: string | null): "RESIDENTIAL" | "COMMERCIAL" | "UNKNOWN" {
