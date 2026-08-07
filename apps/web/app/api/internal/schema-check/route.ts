@@ -41,3 +41,27 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 }
+
+/**
+ * Applies exactly the additive, nullable column `prisma db push` would
+ * generate for the AppraisalValueHistory.certified change -- used because
+ * the build-time `db:push` step didn't appear to reach this database (the
+ * column was still missing per GET above), while this route's own Prisma
+ * connection is confirmed reachable. IF NOT EXISTS makes this safe to
+ * call more than once; it never touches existing rows/columns.
+ */
+export async function POST(request: Request) {
+  const secret = process.env.INTERNAL_INGEST_SECRET;
+  const authHeader = request.headers.get("authorization");
+  if (!secret || authHeader !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "appraisal_value_history" ADD COLUMN IF NOT EXISTS "certified" boolean;`);
+    const columns = await prisma.$queryRaw`SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'appraisal_value_history' ORDER BY ordinal_position`;
+    return NextResponse.json({ ok: true, appraisalValueHistoryColumns: columns });
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
+}
