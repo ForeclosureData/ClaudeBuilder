@@ -3,6 +3,7 @@ import { parseCurrencyToCents, findAllCurrencyAmountsCents } from "./currency";
 import { parseLabeledDate, parseLabeledTime } from "./dates";
 import { detectStatedPropertyAddress } from "./addresses";
 import { parseLegalDescription } from "./legalDescription";
+import { extractLenderParties } from "./lenderExtraction";
 
 /**
  * Layer 1 (deterministic) extraction for a standard Texas
@@ -15,11 +16,7 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
 
   const { match: grantorMatch, names: grantorNames } = extractGrantorNames(text);
 
-  const currentMortgageeMatch = text.match(/Current Mortgagee:?\s*([^\n]+)/i);
-  const lenderMatch = currentMortgageeMatch ?? text.match(/Original Mortgagee:?\s*([^\n]+)/i) ?? text.match(/payable to the order of\s+([^\n,]+)/i);
-  const lenderName = lenderMatch && looksLikeNameList(lenderMatch[1]!) ? cleanName(lenderMatch[1]!) : null;
-
-  const servicerMatch = text.match(/Mortgage Servicer:?\s*([^\n]+)/i);
+  const lenderParties = extractLenderParties(text);
 
   const principalLabelMatch = text.match(/Original Principal Amount:?\s*\$[\d,.]+/i) ?? text.match(/original principal amount of\s*\$[\d,.]+/i);
   const originalPrincipalCents = principalLabelMatch ? parseCurrencyToCents(principalLabelMatch[0]) : null;
@@ -63,16 +60,13 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
       confidence: grantorNames.length ? 0.9 : 0,
       supportingText: grantorMatch?.[0] ?? null,
     }),
-    lenderName: value(lenderName, {
-      explicitlyStated: lenderName !== null,
-      confidence: lenderName !== null ? 0.88 : 0,
-      supportingText: lenderMatch?.[0] ?? null,
-    }),
-    mortgageServicer: value(servicerMatch ? cleanName(servicerMatch[1]!) : null, {
-      explicitlyStated: Boolean(servicerMatch),
-      confidence: servicerMatch ? 0.85 : 0,
-      supportingText: servicerMatch?.[0] ?? null,
-    }),
+    // Deprecated collapsed field -- prefers the current mortgagee (who's actually
+    // foreclosing) since that's almost always the more useful single label, falling
+    // back to the original mortgagee only when no current-holder party was found.
+    lenderName: lenderParties.currentMortgagee.value !== null ? lenderParties.currentMortgagee : lenderParties.originalMortgagee,
+    originalMortgagee: lenderParties.originalMortgagee,
+    currentMortgagee: lenderParties.currentMortgagee,
+    mortgageServicer: lenderParties.mortgageServicer,
     originalPrincipalAmount: value(originalPrincipalCents !== null ? originalPrincipalCents / 100 : null, {
       explicitlyStated: originalPrincipalCents !== null,
       confidence: originalPrincipalCents !== null ? 0.92 : 0,

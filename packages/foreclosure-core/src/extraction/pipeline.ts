@@ -9,6 +9,8 @@ export interface ExtractionPipelineResult {
   overallConfidence: number;
   needsManualReview: boolean;
   manualReviewReasons: string[];
+  /** Set when Layer 2 was attempted (spent budget) but its result couldn't be merged -- visible in the run summary rather than silently discarded, since budget was still spent. */
+  aiFailureReason?: string;
 }
 
 /**
@@ -26,6 +28,7 @@ export async function runExtractionPipeline(
   let merged = deterministic;
   let usedAiFallback = false;
   let aiCostCents = 0;
+  let aiFailureReason: string | undefined;
 
   if (needsAiFallback(deterministic)) {
     const aiOutcome = await extractWithAI(noticeText, budget, aiOptions);
@@ -33,6 +36,8 @@ export async function runExtractionPipeline(
     if (aiOutcome.ranAiExtraction && aiOutcome.result) {
       usedAiFallback = true;
       merged = mergePreferringNonNull(deterministic, aiOutcome.result);
+    } else if (aiOutcome.ranAiExtraction) {
+      aiFailureReason = aiOutcome.reason;
     }
   }
 
@@ -46,6 +51,7 @@ export async function runExtractionPipeline(
     overallConfidence,
     needsManualReview: manualReviewReasons.length > 0,
     manualReviewReasons,
+    aiFailureReason,
   };
 }
 

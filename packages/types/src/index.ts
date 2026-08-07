@@ -33,7 +33,12 @@ export interface ExtractedValue<T> {
 export interface ExtractedForeclosureNotice {
   borrowerNames: ExtractedValue<string[]>;
   grantorNames: ExtractedValue<string[]>;
+  /** @deprecated Collapsed original/current mortgagee -- kept only for the narrow callers (generateForeclosureSummary) that just want "a" lender label. Prefer originalMortgagee/currentMortgagee, which are never conflated. */
   lenderName: ExtractedValue<string>;
+  /** Who made the original loan -- almost always named via a MERS "as nominee for X" clause. */
+  originalMortgagee: ExtractedValue<string>;
+  /** Who currently owns/holds the note -- the party actually foreclosing. Never assumed equal to originalMortgagee. */
+  currentMortgagee: ExtractedValue<string>;
   mortgageServicer: ExtractedValue<string>;
   originalPrincipalAmount: ExtractedValue<number>;
   currentPrincipalBalance: ExtractedValue<number>;

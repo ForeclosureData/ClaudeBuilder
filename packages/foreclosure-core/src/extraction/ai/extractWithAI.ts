@@ -43,7 +43,13 @@ export async function extractWithAI(
 
   const response = await client.messages.create({
     model,
-    max_tokens: 2000,
+    // The schema has ~20 fields, each with 5 sub-properties (value,
+    // explicitlyStated, confidence, supportingText, pageNumber) -- a fully
+    // populated response comfortably exceeds 2000 tokens and was silently
+    // truncating mid-JSON on real notices (confirmed: every one of 15
+    // fallback calls in the 25-notice production run spent budget but
+    // failed to parse/validate, 0/15 merged). Raised with headroom.
+    max_tokens: 4096,
     system: AI_EXTRACTION_SYSTEM_PROMPT,
     messages: [{ role: "user", content: noticeText }],
   });
@@ -54,16 +60,28 @@ export async function extractWithAI(
   const costCents = estimateCostCents(response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0, model);
   await budget.recordSpend(costCents);
 
+  const truncated = response.stop_reason === "max_tokens";
+
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(extractJsonBlock(raw));
   } catch {
-    return { ranAiExtraction: true, result: null, costCents, reason: "AI response was not valid JSON" };
+    return {
+      ranAiExtraction: true,
+      result: null,
+      costCents,
+      reason: truncated ? "AI response was not valid JSON (truncated: hit max_tokens)" : "AI response was not valid JSON",
+    };
   }
 
   const validated = aiExtractionResponseSchema.safeParse(parsedJson);
   if (!validated.success) {
-    return { ranAiExtraction: true, result: null, costCents, reason: `AI response failed schema validation: ${validated.error.message}` };
+    return {
+      ranAiExtraction: true,
+      result: null,
+      costCents,
+      reason: `AI response failed schema validation${truncated ? " (truncated: hit max_tokens)" : ""}: ${validated.error.message}`,
+    };
   }
 
   return { ranAiExtraction: true, result: validated.data, costCents };

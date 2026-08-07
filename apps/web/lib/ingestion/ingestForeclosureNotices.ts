@@ -39,6 +39,8 @@ export interface NoticeReportEntry {
   manualReviewReasons: string[];
   overallExtractionConfidence: number | null;
   aiFallbackUsed: boolean;
+  /** Set when an AI fallback call spent budget but its result couldn't be merged (bad JSON/schema mismatch) -- surfaced so a run's spend is never silently unaccounted for. */
+  aiFailureReason?: string;
 }
 
 export interface IngestionRunSummary {
@@ -283,6 +285,9 @@ export async function ingestForeclosureNotices(
       } else if (entry.report.outcome === "extraction_failed") {
         summary.errors.push(`Extraction failed for ${entry.report.documentNumber ?? "unknown doc"}: persisted with LOW_CONFIDENCE flag`);
       }
+      if (entry.report.aiFailureReason) {
+        summary.errors.push(`AI fallback spent budget but did not merge for ${entry.report.documentNumber ?? "unknown doc"}: ${entry.report.aiFailureReason}`);
+      }
     }
 
     // A bounded/supervised test run (maxNoticesPerBundle set) only ever
@@ -379,8 +384,21 @@ async function processSingleNotice(params: {
   const grantorName = (extracted.grantorNames.value ?? extracted.borrowerNames.value ?? []).join(", ") || "Unknown owner";
   const grantor = await prisma.person.create({ data: { fullName: grantorName } });
 
-  const lenderName = extracted.lenderName.value ?? "Unknown lender";
-  const currentOrg = await prisma.organization.create({ data: { name: lenderName, type: OrganizationType.LENDER } });
+  // Original mortgagee (who made the loan), current mortgagee (who's actually
+  // foreclosing now), and mortgage servicer are three distinct parties that
+  // are frequently different companies -- never collapsed into one
+  // Organization row. A field stays null (not a placeholder "Unknown ..."
+  // org) when the notice didn't state it, matching the property page's own
+  // `?? "Unknown"` display fallback.
+  const originalLenderOrg = extracted.originalMortgagee.value
+    ? await prisma.organization.create({ data: { name: extracted.originalMortgagee.value, type: OrganizationType.LENDER } })
+    : null;
+  const currentMortgageeOrg = extracted.currentMortgagee.value
+    ? await prisma.organization.create({ data: { name: extracted.currentMortgagee.value, type: OrganizationType.LENDER } })
+    : null;
+  const mortgageServicerOrg = extracted.mortgageServicer.value
+    ? await prisma.organization.create({ data: { name: extracted.mortgageServicer.value, type: OrganizationType.SERVICER } })
+    : null;
 
   let property: { id: string } | null = null;
   if (resolution.address.resolvedAddress || resolution.address.addressResolutionMethod !== "UNRESOLVED") {
@@ -445,7 +463,7 @@ async function processSingleNotice(params: {
         subdivision: legalDescription?.subdivision ?? null,
         saleDateIso: extracted.saleDate.value,
         borrowerName: grantorName,
-        lenderName,
+        lenderName: extracted.lenderName.value,
         originalLoanDateIso: extracted.deedOfTrustDate.value,
         originalPrincipalCents,
         currentBalanceStatedCents: statedCurrentBalanceCents,
@@ -503,8 +521,9 @@ async function processSingleNotice(params: {
   await prisma.loan.create({
     data: {
       foreclosureCaseId: fc.id,
-      originalLenderOrgId: currentOrg.id,
-      currentMortgageeOrgId: currentOrg.id,
+      originalLenderOrgId: originalLenderOrg?.id,
+      currentMortgageeOrgId: currentMortgageeOrg?.id,
+      mortgageServicerOrgId: mortgageServicerOrg?.id,
       originalPrincipalAmountCents: originalPrincipalCents,
       deedOfTrustDate: extracted.deedOfTrustDate.value ? new Date(extracted.deedOfTrustDate.value) : null,
       instrumentNumber: extracted.instrumentNumber.value,
@@ -656,6 +675,7 @@ async function processSingleNotice(params: {
       manualReviewReasons,
       overallExtractionConfidence: pipelineResult.overallConfidence,
       aiFallbackUsed: pipelineResult.usedAiFallback,
+      aiFailureReason: pipelineResult.aiFailureReason,
     },
   };
 }

@@ -1,4 +1,6 @@
 export { extractDeterministic, needsAiFallback } from "./extraction/deterministic/texasTemplates";
+export { extractLenderParties } from "./extraction/deterministic/lenderExtraction";
+export type { LenderExtractionResult } from "./extraction/deterministic/lenderExtraction";
 export { parseCurrencyToCents, findAllCurrencyAmountsCents } from "./extraction/deterministic/currency";
 export { parseLabeledDate, parseFirstDate, parseLabeledTime } from "./extraction/deterministic/dates";
 export { detectStatedPropertyAddress, extractLabeledMailingAddress } from "./extraction/deterministic/addresses";
