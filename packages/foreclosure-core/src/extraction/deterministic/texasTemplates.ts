@@ -14,10 +14,11 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
   const text = normalize(noticeText);
 
   const grantorMatch = text.match(/Grant(?:o|0)r:?\s*([^\n]+)/i);
-  const grantorNames = grantorMatch ? splitNames(grantorMatch[1]!) : [];
+  const grantorNames = grantorMatch && looksLikeNameList(grantorMatch[1]!) ? splitNames(grantorMatch[1]!) : [];
 
   const currentMortgageeMatch = text.match(/Current Mortgagee:?\s*([^\n]+)/i);
   const lenderMatch = currentMortgageeMatch ?? text.match(/Original Mortgagee:?\s*([^\n]+)/i) ?? text.match(/payable to the order of\s+([^\n,]+)/i);
+  const lenderName = lenderMatch && looksLikeNameList(lenderMatch[1]!) ? cleanName(lenderMatch[1]!) : null;
 
   const servicerMatch = text.match(/Mortgage Servicer:?\s*([^\n]+)/i);
 
@@ -41,7 +42,7 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
   const propertyIdMatch = text.match(/Property ID:?\s*([A-Za-z0-9\-]+)/i) ?? text.match(/Geographic ID:?\s*([A-Za-z0-9\-]+)/i);
 
   const trusteeMatch = text.match(/Substitute Trustee\(?s?\)?:?\s*([^\n]+)/i);
-  const trusteeNames = trusteeMatch ? splitNames(trusteeMatch[1]!) : [];
+  const trusteeNames = trusteeMatch && looksLikeNameList(trusteeMatch[1]!) ? splitNames(trusteeMatch[1]!) : [];
 
   const evidence = (pattern: RegExp): string | null => text.match(pattern)?.[0]?.trim() ?? null;
 
@@ -56,9 +57,9 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
       confidence: grantorNames.length ? 0.9 : 0,
       supportingText: grantorMatch?.[0] ?? null,
     }),
-    lenderName: value(lenderMatch ? cleanName(lenderMatch[1]!) : null, {
-      explicitlyStated: Boolean(lenderMatch),
-      confidence: lenderMatch ? 0.88 : 0,
+    lenderName: value(lenderName, {
+      explicitlyStated: lenderName !== null,
+      confidence: lenderName !== null ? 0.88 : 0,
       supportingText: lenderMatch?.[0] ?? null,
     }),
     mortgageServicer: value(servicerMatch ? cleanName(servicerMatch[1]!) : null, {
@@ -152,6 +153,24 @@ function normalize(text: string): string {
 
 function cleanName(raw: string): string {
   return raw.replace(/\s+/g, " ").replace(/[.,;]+$/, "").trim();
+}
+
+/**
+ * Rejects a "label: rest of line" capture that plausibly matched a
+ * generic sentence mentioning the label rather than the actual labeled
+ * name -- e.g. against a real Hidalgo notice, `/Substitute Trustee.../`
+ * matches the document's own title ("Notice of Substitute Trustee Sale",
+ * capturing "Sale") and a later throwaway mention ("...or any substitute
+ * trustee.", capturing text starting mid-sentence) before ever reaching
+ * the real "Substitute Trustee: <Name>" line. A genuine name/company
+ * capture reads as a short run of capitalized words; a false positive
+ * from a generic sentence starts mid-clause in lowercase or with
+ * unrelated punctuation.
+ */
+function looksLikeNameList(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 4 || trimmed.length > 200) return false;
+  return /^[A-Z][a-zA-Z.&'\-]*(?:\s+[A-Z][a-zA-Z.&'\-]*){1,}/.test(trimmed);
 }
 
 function splitNames(raw: string): string[] {
