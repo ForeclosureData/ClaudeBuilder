@@ -1,34 +1,12 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@foreclosuredata/database";
 
 /**
- * TEMPORARY diagnostic route -- pulls raw OCR text for the 5 real Hidalgo
- * notices from the first bounded production run, so their real phrasing
- * can be inspected offline to improve the deterministic borrower/grantor
- * parser. Same pattern as the retired render-debug route: gated behind
- * INTERNAL_INGEST_SECRET, fetched once, then neutered back to a 410 stub
- * immediately after use -- never left exposed.
+ * Retired after pulling the 5 real notices' raw OCR text once to tune the
+ * deterministic grantor/borrower parser against real Hidalgo phrasing.
+ * Same neutering pattern as render-debug: this site's upload-based deploy
+ * doesn't reliably drop a route on file deletion, so an always-410 stub is
+ * used instead.
  */
-export async function GET(request: Request) {
-  const secret = process.env.INTERNAL_INGEST_SECRET;
-  const authHeader = request.headers.get("authorization");
-  if (!secret || authHeader !== `Bearer ${secret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const docs = await prisma.sourceDocument.findMany({
-    where: { countyFilingNumber: { not: null } },
-    orderBy: { createdAt: "desc" },
-    take: 5,
-    select: {
-      id: true,
-      countyFilingNumber: true,
-      extractionConfidence: true,
-      manualReviewStatus: true,
-      status: true,
-      rawText: true,
-    },
-  });
-
-  return NextResponse.json({ docs });
+export async function GET() {
+  return NextResponse.json({ error: "Gone" }, { status: 410 });
 }
