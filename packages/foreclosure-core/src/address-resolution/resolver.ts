@@ -34,6 +34,13 @@ export interface ResolutionOutcome {
   resolution: PropertyResolutionResult;
   candidates: AppraisalPropertyCandidate[];
   selectedCandidate: AppraisalPropertyCandidate | null;
+  /** How many live adapter.searchProperties() calls were actually made gathering these candidates. */
+  requestsUsed: number;
+}
+
+/** Caps how many adapter.searchProperties() calls gatherCandidates() will make for one notice -- a live-access rate/cost control, independent of scoring. Mutated in place as requests are used; omit for unlimited (the default for fixture/mock adapters in tests). */
+export interface RequestBudget {
+  remaining: number;
 }
 
 /**
@@ -53,9 +60,20 @@ export async function resolvePropertyAddress(
   input: ResolutionInput,
   appraisalAdapter: CountyAppraisalAdapter,
   thresholds?: MatchThresholds,
+  budget?: RequestBudget,
 ): Promise<ResolutionOutcome> {
   if (input.statedPropertyAddress && input.statedAddressMethod) {
     const method = input.statedAddressMethod;
+    // The address itself is already known and trusted from the notice
+    // text, so it's never replaced here. The CAD is still consulted (bound
+    // by the same request budget as an unresolved case) purely to ENRICH
+    // this case with appraisal-district data (market/appraised value,
+    // parcel ID, etc.) -- pickEnrichmentCandidate() only attaches that data
+    // when a single unambiguous match is found, never on owner-name-alone
+    // evidence, and never touches resolvedAddress/addressResolutionMethod.
+    const { candidates, requestsUsed } = await gatherCandidates(input, appraisalAdapter, budget);
+    const enrichment = pickEnrichmentCandidate(candidates, input);
+
     return {
       address: {
         addressResolutionMethod: method,
@@ -65,24 +83,27 @@ export async function resolvePropertyAddress(
             ? "The property street address was explicitly stated in the foreclosure notice."
             : 'A "commonly known as" phrase in the notice stated the property street address.',
         resolvedAddress: input.statedPropertyAddress,
-        propertyId: null,
+        propertyId: enrichment?.sourcePropertyId ?? null,
       },
       resolution: {
-        selectedCandidateId: null,
+        selectedCandidateId: enrichment?.sourcePropertyId ?? null,
         confidence: method === "EXPLICIT_STATED" ? 0.98 : 0.9,
         resolutionMethod: "explicit_address",
-        explanation: "Address was explicitly stated in the source document; no appraisal-district lookup was needed.",
+        explanation:
+          "Address was explicitly stated in the source document; no appraisal-district lookup was needed to resolve it." +
+          (enrichment ? " A single unambiguous CAD match was found and used to enrich the case with valuation data." : ""),
         matchedFields: ["statedAddress"],
         conflictingFields: [],
-        candidateCount: 0,
+        candidateCount: candidates.length,
         requiresManualReview: false,
       },
-      candidates: [],
-      selectedCandidate: null,
+      candidates,
+      selectedCandidate: enrichment,
+      requestsUsed,
     };
   }
 
-  const candidates = await gatherCandidates(input, appraisalAdapter);
+  const { candidates, requestsUsed } = await gatherCandidates(input, appraisalAdapter, budget);
 
   const scoringInput: ScoringInput = {
     ownerNames: input.ownerNames,
@@ -125,7 +146,43 @@ export async function resolvePropertyAddress(
     resolution,
     candidates,
     selectedCandidate,
+    requestsUsed,
   };
+}
+
+/**
+ * Only used for cases whose address was already explicitly stated in the
+ * notice (the CAD is enrichment-only there, never a resolution source) --
+ * separate from, and deliberately simpler than, scoring.ts's full fuzzy
+ * scorer. Attaches valuation data only when exactly one CAD candidate is
+ * unambiguous: either it's the sole result and doesn't contradict a known
+ * lot/block, or lot+block from the notice narrows multiple results down
+ * to exactly one. Anything less certain enriches nothing rather than
+ * guessing -- false enrichment on the wrong parcel is worse than none.
+ */
+function pickEnrichmentCandidate(candidates: AppraisalPropertyCandidate[], input: ResolutionInput): AppraisalPropertyCandidate | null {
+  if (candidates.length === 0) return null;
+
+  const lot = input.legalDescription?.lot ?? null;
+  const block = input.legalDescription?.block ?? null;
+
+  if (candidates.length === 1) {
+    const only = candidates[0]!;
+    if (lot && only.lot && normalizeToken(only.lot) !== normalizeToken(lot)) return null;
+    if (block && only.block && normalizeToken(only.block) !== normalizeToken(block)) return null;
+    return only;
+  }
+
+  if (lot && block) {
+    const exact = candidates.filter((c) => c.lot && normalizeToken(c.lot) === normalizeToken(lot) && c.block && normalizeToken(c.block) === normalizeToken(block));
+    if (exact.length === 1) return exact[0]!;
+  }
+
+  return null;
+}
+
+function normalizeToken(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 /**
@@ -140,20 +197,36 @@ export async function resolvePropertyAddress(
  * when the notice has the data for them, and F/G exist specifically so an
  * owner-name search is corroborated by a second field before scoring
  * treats it as strong evidence (step H — fuzzy candidate scoring).
+ *
+ * `budget`, when provided, caps how many of these strategies actually
+ * reach the adapter -- once exhausted, remaining strategies are simply
+ * skipped (not retried later), same as if the notice lacked that data.
  */
-async function gatherCandidates(input: ResolutionInput, adapter: CountyAppraisalAdapter): Promise<AppraisalPropertyCandidate[]> {
+async function gatherCandidates(
+  input: ResolutionInput,
+  adapter: CountyAppraisalAdapter,
+  budget?: RequestBudget,
+): Promise<{ candidates: AppraisalPropertyCandidate[]; requestsUsed: number }> {
   const byId = new Map<string, AppraisalPropertyCandidate>();
+  let requestsUsed = 0;
   const add = (list: AppraisalPropertyCandidate[]) => {
     for (const c of list) byId.set(c.sourcePropertyId, c);
+  };
+  const hasBudget = () => budget === undefined || budget.remaining > 0;
+  const spend = async (query: Parameters<CountyAppraisalAdapter["searchProperties"]>[0]) => {
+    if (!hasBudget()) return;
+    if (budget) budget.remaining -= 1;
+    requestsUsed += 1;
+    add(await adapter.searchProperties(query));
   };
 
   // A. Parcel ID
   if (input.propertyIdFromNotice && adapter.capabilities.searchByParcelId) {
-    add(await adapter.searchProperties({ parcelId: input.propertyIdFromNotice }));
+    await spend({ parcelId: input.propertyIdFromNotice });
   }
   // B. Geographic ID
   if (input.geographicIdFromNotice && adapter.capabilities.searchByParcelId) {
-    add(await adapter.searchProperties({ geographicId: input.geographicIdFromNotice }));
+    await spend({ geographicId: input.geographicIdFromNotice });
   }
   // C. Subdivision — deliberately searched alone (not filtered by lot/block
   // too): a subdivision search should return every lot in it, so scoring.ts
@@ -161,11 +234,11 @@ async function gatherCandidates(input: ResolutionInput, adapter: CountyAppraisal
   // conflicting one (a different lot in the same subdivision). Filtering by
   // lot here would silently hide that conflict from the scorer.
   if (input.legalDescription?.subdivision && adapter.capabilities.searchBySubdivision) {
-    add(await adapter.searchProperties({ subdivision: input.legalDescription.subdivision }));
+    await spend({ subdivision: input.legalDescription.subdivision });
   }
   // D. Legal description (full text)
   if (input.legalDescription?.rawText && adapter.capabilities.searchByLegalDescription) {
-    add(await adapter.searchProperties({ legalDescription: input.legalDescription.rawText }));
+    await spend({ legalDescription: input.legalDescription.rawText });
   }
 
   const ownerVariants = input.ownerNames.flatMap((n) => normalizeOwnerName(n).people);
@@ -173,19 +246,19 @@ async function gatherCandidates(input: ResolutionInput, adapter: CountyAppraisal
 
   // E. Owner name alone
   if (ownerQueryNames.length && adapter.capabilities.searchByOwnerName) {
-    add(await adapter.searchProperties({ ownerNames: ownerQueryNames }));
+    await spend({ ownerNames: ownerQueryNames });
   }
   // F. Owner name + subdivision
   if (ownerQueryNames.length && input.legalDescription?.subdivision && adapter.capabilities.searchByOwnerName && adapter.capabilities.searchBySubdivision) {
-    add(await adapter.searchProperties({ ownerNames: ownerQueryNames, subdivision: input.legalDescription.subdivision }));
+    await spend({ ownerNames: ownerQueryNames, subdivision: input.legalDescription.subdivision });
   }
   // G. Owner name + acreage
   if (ownerQueryNames.length && input.legalDescription?.acreage != null && adapter.capabilities.searchByOwnerName) {
-    add(await adapter.searchProperties({ ownerNames: ownerQueryNames, acreage: input.legalDescription.acreage }));
+    await spend({ ownerNames: ownerQueryNames, acreage: input.legalDescription.acreage });
   }
 
   // H. Fuzzy candidate scoring happens downstream in scoring.ts against
   // this full gathered set, not as a separate search step here.
 
-  return Array.from(byId.values());
+  return { candidates: Array.from(byId.values()), requestsUsed };
 }

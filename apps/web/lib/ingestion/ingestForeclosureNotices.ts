@@ -21,6 +21,7 @@ import {
   detectStatedPropertyAddress,
   generateForeclosureSummary,
   type ResolutionInput,
+  type RequestBudget,
 } from "@foreclosuredata/foreclosure-core";
 import { getCountyAppraisalAdapter } from "../appraisal";
 
@@ -337,7 +338,8 @@ async function processSingleNotice(params: {
     city: null,
   };
 
-  const resolution = await resolvePropertyAddress(resolutionInput, params.appraisalAdapter);
+  const cadBudget: RequestBudget = { remaining: Number(process.env.HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE ?? 5) };
+  const resolution = await resolvePropertyAddress(resolutionInput, params.appraisalAdapter, undefined, cadBudget);
 
   const grantorName = (extracted.grantorNames.value ?? extracted.borrowerNames.value ?? []).join(", ") || "Unknown owner";
   const grantor = await prisma.person.create({ data: { fullName: grantorName } });

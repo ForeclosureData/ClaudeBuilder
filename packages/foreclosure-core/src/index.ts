@@ -14,7 +14,7 @@ export { runExtractionPipeline } from "./extraction/pipeline";
 export type { ExtractionPipelineResult } from "./extraction/pipeline";
 
 export { resolvePropertyAddress } from "./address-resolution/resolver";
-export type { ResolutionInput, ResolvedAddress, ResolutionOutcome } from "./address-resolution/resolver";
+export type { ResolutionInput, ResolvedAddress, ResolutionOutcome, RequestBudget } from "./address-resolution/resolver";
 export { MockCountyAppraisalAdapter, HidalgoCountyAppraisalAdapter } from "./address-resolution/appraisalAdapter";
 export type {
   CountyAppraisalAdapter,
