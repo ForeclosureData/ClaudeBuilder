@@ -85,6 +85,10 @@ export const hidalgoAdapter: CountyForeclosureAdapter = {
         lowConfidence: notice.lowConfidence,
       });
     }
+
+    if (bundled.length === 0 && result.stoppedEarly) {
+      throw new Error(`splitHidalgoBundle produced zero notices: ${result.stopReason ?? "unknown reason"}`);
+    }
     return bundled;
   },
 };
