@@ -40,6 +40,15 @@ const nextConfig = {
         "../../node_modules/@napi-rs/canvas-linux-x64-gnu/*.node",
         "../../node_modules/.pnpm/@napi-rs+canvas-linux-x64-gnu@*/node_modules/@napi-rs/canvas-linux-x64-gnu/*.node",
         "../../packages/county-adapters/src/hidalgo/vendor/pdfjs-wasm/*",
+        // pdfjs-dist is marked external above so webpack won't bundle it,
+        // but that means Node needs the real package files present at
+        // runtime — Next's automatic tracing for "external" packages
+        // turned out not to include pdf.worker.mjs (needed for its
+        // in-process "fake worker" fallback), so the whole package is
+        // swept in explicitly rather than guessing which specific files
+        // it dynamically loads.
+        "../../node_modules/pdfjs-dist/legacy/build/*",
+        "../../node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/legacy/build/*",
       ],
     },
   },
