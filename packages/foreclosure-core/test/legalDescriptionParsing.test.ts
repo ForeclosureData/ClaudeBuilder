@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseLegalDescriptionTokens, tokensOverlap } from "../src/address-resolution/legalDescriptionParsing";
+import { parseLegalDescriptionTokens, tokensOverlap, buildLegalDescriptionCacheKey } from "../src/address-resolution/legalDescriptionParsing";
 
 describe("parseLegalDescriptionTokens", () => {
   it("extracts subdivision, lot, and block from a typical notice string", () => {
@@ -42,5 +42,27 @@ describe("tokensOverlap", () => {
 
   it("returns false for clearly different values", () => {
     expect(tokensOverlap("Sunrise Terrace Subdivision", "Green Meadows Subdivision")).toBe(false);
+  });
+});
+
+describe("buildLegalDescriptionCacheKey", () => {
+  it("keys on normalized subdivision + lot + block when a subdivision is present", () => {
+    const key = buildLegalDescriptionCacheKey({ subdivision: "Sunrise Terrace Subdivision", lot: "14", block: "3", rawText: "irrelevant" });
+    expect(key).toBe("SUBDIVISION:SUNRISE TERRACE SUBDIVISION|LOT:14|BLOCK:3");
+  });
+
+  it("is case- and punctuation-insensitive so the same lot matches regardless of transcription formatting", () => {
+    const a = buildLegalDescriptionCacheKey({ subdivision: "Sunrise Terrace Subdivision", lot: "14", block: "3" });
+    const b = buildLegalDescriptionCacheKey({ subdivision: "SUNRISE TERRACE SUBDIVISION", lot: "14", block: "3." });
+    expect(a).toBe(b);
+  });
+
+  it("falls back to normalized raw text when no subdivision was parsed", () => {
+    const key = buildLegalDescriptionCacheKey({ rawText: "Metes and bounds description, Hidalgo County" });
+    expect(key).toBe("RAWTEXT:METES AND BOUNDS DESCRIPTION HIDALGO COUNTY");
+  });
+
+  it("returns null when there is nothing stable to key on", () => {
+    expect(buildLegalDescriptionCacheKey({})).toBeNull();
   });
 });

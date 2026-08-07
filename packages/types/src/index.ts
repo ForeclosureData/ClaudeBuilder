@@ -220,6 +220,7 @@ export type AddressResolutionMethod =
   | "OWNER_MAILING_ADDRESS_MATCH"
   | "MULTI_FIELD_MATCH"
   | "GEOCODING"
+  | "CACHED_MATCH_REUSE"
   | "MANUAL"
   | "UNRESOLVED";
 
@@ -270,6 +271,8 @@ export interface AppraisalPropertyCandidate {
   marketValueCents: number | null;
   homestead: boolean | null;
   taxYear: number | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 /** Full detail fetch — same shape as a candidate today; kept distinct in the interface since a real adapter's "details" call is typically a different, richer request than "search." */

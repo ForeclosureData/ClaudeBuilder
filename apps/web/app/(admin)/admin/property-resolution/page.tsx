@@ -1,6 +1,8 @@
 import { revalidatePath } from "next/cache";
+import Link from "next/link";
 import { prisma } from "@foreclosuredata/database";
-import { resolvePropertyAddress, type ResolutionInput } from "@foreclosuredata/foreclosure-core";
+import type { Prisma } from "@foreclosuredata/database";
+import { resolvePropertyAddress, explainMatch, buildLegalDescriptionCacheKey, type ResolutionInput } from "@foreclosuredata/foreclosure-core";
 import { getCurrentProfileId } from "@/lib/supabase/server";
 import { getCountyAppraisalAdapter } from "@/lib/appraisal";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,6 +14,125 @@ import { formatCurrencyCents } from "@/lib/utils";
 export const dynamic = "force-dynamic";
 
 const ADDRESS_REASONS = ["NO_ADDRESS_RESOLVED", "MULTIPLE_APPRAISAL_MATCHES"] as const;
+
+/** A minimal, provider-agnostic shape covering both AppraisalPropertyCandidate rows and CountyAppraisalAdapter records — the one thing approveCandidate() and the cache-reuse path in searchAgain() both need to write to Property/AppraisalValueHistory. */
+interface ResolvedAppraisalData {
+  sourcePropertyId: string;
+  sourceUrl?: string | null;
+  situsAddress: string | null;
+  city: string | null;
+  legalDescription: string | null;
+  subdivision: string | null;
+  lot: string | null;
+  block: string | null;
+  acreage: number | null;
+  parcelId: string | null;
+  geographicId: string | null;
+  classification: Prisma.PropertyCreateInput["classification"];
+  appraisedValueCents: number | null;
+  assessedValueCents: number | null;
+  marketValueCents: number | null;
+  landValueCents: number | null;
+  improvementValueCents: number | null;
+  homestead: boolean | null;
+  taxYear: number | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+/** Shared by approveCandidate() (a human picked a candidate) and the cache-reuse path in searchAgain() (a prior successful match is being reused for the same legal description) — writes the property + append-only value-history rows, never overwriting a prior tax year. */
+async function upsertPropertyFromAppraisalData(
+  tx: Prisma.TransactionClient,
+  params: { foreclosureCaseId: string; countyId: string; existingPropertyId: string | null; data: ResolvedAppraisalData; addressResolutionMethod: "MANUAL" | "CACHED_MATCH_REUSE"; addressResolutionConfidence: number; addressResolutionExplanation: string },
+): Promise<string> {
+  const { data } = params;
+  const propertyData = {
+    propertyStreetAddress: data.situsAddress,
+    city: data.city,
+    legalDescription: data.legalDescription,
+    subdivision: data.subdivision,
+    lot: data.lot,
+    block: data.block,
+    acreage: data.acreage,
+    propertyIdNumber: data.parcelId,
+    geographicId: data.geographicId,
+    classification: data.classification,
+    appraisedValueCents: data.appraisedValueCents,
+    assessedValueCents: data.assessedValueCents,
+    estimatedMarketValueCents: data.marketValueCents,
+    latitude: data.latitude,
+    longitude: data.longitude,
+    addressResolutionMethod: params.addressResolutionMethod,
+    addressResolutionConfidence: params.addressResolutionConfidence,
+    addressResolutionExplanation: params.addressResolutionExplanation,
+  };
+
+  let propertyId = params.existingPropertyId;
+  if (propertyId) {
+    await tx.property.update({ where: { id: propertyId }, data: propertyData });
+  } else {
+    const county = await tx.county.findUnique({ where: { id: params.countyId } });
+    const created = await tx.property.create({ data: { countyId: params.countyId, state: county?.state ?? "TX", ...propertyData } });
+    propertyId = created.id;
+    await tx.foreclosureCase.update({ where: { id: params.foreclosureCaseId }, data: { propertyId } });
+  }
+
+  if (data.taxYear && data.appraisedValueCents !== null) {
+    await tx.appraisalValueHistory.upsert({
+      where: { propertyId_taxYear: { propertyId, taxYear: data.taxYear } },
+      create: {
+        propertyId,
+        taxYear: data.taxYear,
+        landValueCents: data.landValueCents,
+        improvementValueCents: data.improvementValueCents,
+        appraisedValueCents: data.appraisedValueCents,
+        assessedValueCents: data.assessedValueCents,
+        marketValueCents: data.marketValueCents,
+        homestead: data.homestead,
+        sourceUrl: data.sourceUrl,
+      },
+      update: {
+        landValueCents: data.landValueCents,
+        improvementValueCents: data.improvementValueCents,
+        appraisedValueCents: data.appraisedValueCents,
+        assessedValueCents: data.assessedValueCents,
+        marketValueCents: data.marketValueCents,
+        homestead: data.homestead,
+        sourceUrl: data.sourceUrl,
+      },
+    });
+  }
+
+  return propertyId;
+}
+
+/** Records (or refreshes) the reuse cache once a legal description has been successfully matched — powers "cache successful matches" / "reuse previous successful matches whenever appropriate." */
+async function recordSuccessfulMatch(
+  tx: Prisma.TransactionClient,
+  params: { countyId: string; countyAppraisalSourceKey: string; sourcePropertyId: string; situsAddress: string | null; confidence: number; legal: { subdivision?: string | null; lot?: string | null; block?: string | null; rawText?: string | null } },
+) {
+  const normalizedKey = buildLegalDescriptionCacheKey(params.legal);
+  if (!normalizedKey) return;
+  await tx.resolvedLegalDescriptionMatch.upsert({
+    where: { countyId_normalizedKey: { countyId: params.countyId, normalizedKey } },
+    create: {
+      countyId: params.countyId,
+      normalizedKey,
+      countyAppraisalSourceKey: params.countyAppraisalSourceKey,
+      sourcePropertyId: params.sourcePropertyId,
+      situsAddress: params.situsAddress,
+      confidence: params.confidence,
+    },
+    update: {
+      countyAppraisalSourceKey: params.countyAppraisalSourceKey,
+      sourcePropertyId: params.sourcePropertyId,
+      situsAddress: params.situsAddress,
+      confidence: params.confidence,
+      timesReused: { increment: 1 },
+      lastConfirmedAt: new Date(),
+    },
+  });
+}
 
 async function approveCandidate(taskId: string, foreclosureCaseId: string, candidateId: string) {
   "use server";
@@ -26,60 +147,24 @@ async function approveCandidate(taskId: string, foreclosureCaseId: string, candi
     await tx.appraisalPropertyCandidate.updateMany({ where: { foreclosureCaseId }, data: { isSelected: false } });
     await tx.appraisalPropertyCandidate.update({ where: { id: candidateId }, data: { isSelected: true } });
 
-    const propertyData = {
-      propertyStreetAddress: candidate.situsAddress,
-      city: candidate.city,
-      legalDescription: candidate.legalDescription,
-      subdivision: candidate.subdivision,
-      lot: candidate.lot,
-      block: candidate.block,
-      acreage: candidate.acreage,
-      propertyIdNumber: candidate.parcelId,
-      geographicId: candidate.geographicId,
-      classification: candidate.classification,
-      appraisedValueCents: candidate.appraisedValueCents,
-      assessedValueCents: candidate.assessedValueCents,
-      estimatedMarketValueCents: candidate.marketValueCents,
-      addressResolutionMethod: "MANUAL" as const,
+    const propertyId = await upsertPropertyFromAppraisalData(tx, {
+      foreclosureCaseId,
+      countyId: fc.countyId,
+      existingPropertyId: fc.propertyId,
+      data: candidate,
+      addressResolutionMethod: "MANUAL",
       addressResolutionConfidence: 1,
       addressResolutionExplanation: "Manually approved by an administrator from a scored appraisal-district candidate.",
-    };
+    });
 
-    let propertyId = fc.propertyId;
-    if (propertyId) {
-      await tx.property.update({ where: { id: propertyId }, data: propertyData });
-    } else {
-      const county = await tx.county.findUnique({ where: { id: fc.countyId } });
-      const created = await tx.property.create({ data: { countyId: fc.countyId, state: county?.state ?? "TX", ...propertyData } });
-      propertyId = created.id;
-      await tx.foreclosureCase.update({ where: { id: foreclosureCaseId }, data: { propertyId } });
-    }
-
-    if (candidate.taxYear && candidate.appraisedValueCents !== null) {
-      await tx.appraisalValueHistory.upsert({
-        where: { propertyId_taxYear: { propertyId, taxYear: candidate.taxYear } },
-        create: {
-          propertyId,
-          taxYear: candidate.taxYear,
-          landValueCents: candidate.landValueCents,
-          improvementValueCents: candidate.improvementValueCents,
-          appraisedValueCents: candidate.appraisedValueCents,
-          assessedValueCents: candidate.assessedValueCents,
-          marketValueCents: candidate.marketValueCents,
-          homestead: candidate.homestead,
-          sourceUrl: candidate.sourceUrl,
-        },
-        update: {
-          landValueCents: candidate.landValueCents,
-          improvementValueCents: candidate.improvementValueCents,
-          appraisedValueCents: candidate.appraisedValueCents,
-          assessedValueCents: candidate.assessedValueCents,
-          marketValueCents: candidate.marketValueCents,
-          homestead: candidate.homestead,
-          sourceUrl: candidate.sourceUrl,
-        },
-      });
-    }
+    await recordSuccessfulMatch(tx, {
+      countyId: fc.countyId,
+      countyAppraisalSourceKey: candidate.countyAppraisalSourceKey,
+      sourcePropertyId: candidate.sourcePropertyId,
+      situsAddress: candidate.situsAddress,
+      confidence: 1,
+      legal: { subdivision: candidate.subdivision, lot: candidate.lot, block: candidate.block, rawText: candidate.legalDescription },
+    });
 
     await tx.manualReviewTask.update({ where: { id: taskId }, data: { status: "RESOLVED", resolvedAt: new Date() } });
     await tx.auditLog.create({
@@ -130,7 +215,97 @@ async function searchAgain(taskId: string, foreclosureCaseId: string) {
   if (!fc) return;
 
   const legal = fc.legalDescriptions[0];
+  const legalForCacheKey = legal
+    ? { subdivision: legal.subdivision, lot: legal.lot, block: legal.block, rawText: legal.rawText }
+    : { subdivision: fc.property?.subdivision, lot: fc.property?.lot, block: fc.property?.block, rawText: fc.property?.legalDescription };
   const ownerNames = [fc.borrower?.fullName, fc.grantor?.fullName, fc.currentOwner?.fullName, ...fc.coOwnerNames].filter((n): n is string => Boolean(n));
+
+  // Do not repeatedly search the CAD for the same foreclosure: if this
+  // exact legal description has already been successfully matched before
+  // (auto-accepted or admin-approved, for this case or an earlier one),
+  // reuse that match with a single getPropertyDetails() refresh instead of
+  // re-running the full multi-strategy search.
+  const cacheKey = buildLegalDescriptionCacheKey(legalForCacheKey);
+  const cached = cacheKey ? await prisma.resolvedLegalDescriptionMatch.findUnique({ where: { countyId_normalizedKey: { countyId: fc.countyId, normalizedKey: cacheKey } } }) : null;
+
+  if (cached) {
+    try {
+      const adapter = getCountyAppraisalAdapter(fc.county.slug);
+      const record = await adapter.getPropertyDetails(cached.sourcePropertyId);
+      await prisma.$transaction(async (tx) => {
+        await tx.appraisalPropertyCandidate.updateMany({ where: { foreclosureCaseId }, data: { isSelected: false } });
+        await tx.appraisalPropertyCandidate.create({
+          data: {
+            foreclosureCaseId,
+            countyAppraisalSourceKey: cached.countyAppraisalSourceKey,
+            sourcePropertyId: record.sourcePropertyId,
+            sourceUrl: record.sourceUrl ?? null,
+            ownerName: record.ownerName,
+            situsAddress: record.situsAddress,
+            city: record.city,
+            zipCode: record.zipCode,
+            parcelId: record.parcelId,
+            geographicId: record.geographicId,
+            legalDescription: record.legalDescription,
+            subdivision: record.subdivision,
+            lot: record.lot,
+            block: record.block,
+            acreage: record.acreage,
+            classification: record.classification,
+            landValueCents: record.landValueCents,
+            improvementValueCents: record.improvementValueCents,
+            appraisedValueCents: record.appraisedValueCents,
+            assessedValueCents: record.assessedValueCents,
+            marketValueCents: record.marketValueCents,
+            homestead: record.homestead,
+            taxYear: record.taxYear,
+            latitude: record.latitude,
+            longitude: record.longitude,
+            score: cached.confidence,
+            matchedFields: ["cachedLegalDescriptionMatch"],
+            isSelected: true,
+          },
+        });
+        await upsertPropertyFromAppraisalData(tx, {
+          foreclosureCaseId,
+          countyId: fc.countyId,
+          existingPropertyId: fc.propertyId,
+          data: record,
+          addressResolutionMethod: "CACHED_MATCH_REUSE",
+          addressResolutionConfidence: cached.confidence,
+          addressResolutionExplanation: `Reused a previously confirmed match for this legal description (matched ${cached.timesReused + 1} time(s) total) instead of re-running a CAD search.`,
+        });
+        await recordSuccessfulMatch(tx, {
+          countyId: fc.countyId,
+          countyAppraisalSourceKey: cached.countyAppraisalSourceKey,
+          sourcePropertyId: record.sourcePropertyId,
+          situsAddress: record.situsAddress,
+          confidence: cached.confidence,
+          legal: legalForCacheKey,
+        });
+        await tx.propertyResolutionAttempt.create({
+          data: {
+            foreclosureCaseId,
+            resolutionMethod: "CACHED_MATCH_REUSE",
+            confidence: cached.confidence,
+            explanation: `Reused a previously confirmed CAD match for this legal description instead of re-searching.`,
+            matchedFields: ["cachedLegalDescriptionMatch"],
+            conflictingFields: [],
+            candidateCount: 1,
+            requiresManualReview: false,
+            selectedCandidateId: record.sourcePropertyId,
+          },
+        });
+        await tx.manualReviewTask.update({ where: { id: taskId }, data: { status: "RESOLVED", resolvedAt: new Date(), notes: `Auto-resolved by reusing a cached match for this legal description.` } });
+        await tx.auditLog.create({ data: { actorId, action: "CACHED_MATCH_AUTO_RESOLVED", entityType: "ForeclosureCase", entityId: foreclosureCaseId, afterJson: { sourcePropertyId: record.sourcePropertyId } } });
+      });
+      revalidatePath("/admin/property-resolution");
+      return;
+    } catch {
+      // Cached property no longer resolves (renumbered/removed) — fall
+      // through to a live search below rather than failing outright.
+    }
+  }
 
   const input: ResolutionInput = {
     statedPropertyAddress: fc.property?.propertyStreetAddress ?? null,
@@ -177,6 +352,8 @@ async function searchAgain(taskId: string, foreclosureCaseId: string) {
           marketValueCents: c.marketValueCents,
           homestead: c.homestead,
           taxYear: c.taxYear,
+          latitude: c.latitude,
+          longitude: c.longitude,
         })),
       });
       await tx.propertyResolutionAttempt.create({
@@ -246,6 +423,7 @@ export default async function PropertyResolutionPage() {
   const tasks = await prisma.manualReviewTask.findMany({
     where: { status: "OPEN", reason: { in: [...ADDRESS_REASONS] } },
     include: {
+      sourceDocument: true,
       foreclosureCase: {
         include: {
           county: true,
@@ -255,6 +433,7 @@ export default async function PropertyResolutionPage() {
           currentOwner: true,
           legalDescriptions: { orderBy: { createdAt: "desc" }, take: 1 },
           appraisalCandidates: { orderBy: { score: "desc" } },
+          documents: { orderBy: { dateCollected: "desc" }, take: 1 },
         },
       },
     },
@@ -275,6 +454,7 @@ export default async function PropertyResolutionPage() {
           const legal = fc.legalDescriptions[0];
           const ownerNames = [fc.borrower?.fullName, fc.grantor?.fullName, fc.currentOwner?.fullName].filter(Boolean).join(", ") || "Unknown";
           const candidates = fc.appraisalCandidates;
+          const originalNotice = t.sourceDocument ?? fc.documents[0] ?? null;
 
           return (
             <Card key={t.id} className="p-4">
@@ -285,6 +465,11 @@ export default async function PropertyResolutionPage() {
                     {fc.county.name} County &middot; Owner: {ownerNames}
                   </p>
                   <p className="mt-1 text-sm text-neutral-500">{legal?.rawText ?? fc.property?.legalDescription ?? "No legal description recorded."}</p>
+                  {originalNotice && (
+                    <Link href={originalNotice.documentUrl} target="_blank" className="mt-1 inline-block text-xs text-brand-600 underline dark:text-brand-400">
+                      View original foreclosure notice
+                    </Link>
+                  )}
                   {t.notes && <p className="mt-1 text-xs text-neutral-400">{t.notes}</p>}
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -312,12 +497,7 @@ export default async function PropertyResolutionPage() {
                           {c.ownerName ?? "Unknown owner"} &middot; {c.subdivision ?? "—"} Lot {c.lot ?? "—"} Blk {c.block ?? "—"} &middot;{" "}
                           {formatCurrencyCents(c.appraisedValueCents)}
                         </p>
-                        {(c.matchedFields.length > 0 || c.conflictingFields.length > 0) && (
-                          <p className="mt-1 text-xs text-neutral-400">
-                            {c.matchedFields.length > 0 && <span>Matched: {c.matchedFields.join(", ")}</span>}
-                            {c.conflictingFields.length > 0 && <span className="ml-2 text-danger-500">Conflicting: {c.conflictingFields.join(", ")}</span>}
-                          </p>
-                        )}
+                        <p className="mt-1 text-xs text-neutral-400">{explainMatch(c.matchedFields, c.conflictingFields)}</p>
                       </div>
                       <div className="flex items-center gap-2">
                         {c.score !== null && <Badge tone={c.score >= 0.7 ? "success" : c.score >= 0.4 ? "warning" : "danger"}>{Math.round(c.score * 100)}%</Badge>}

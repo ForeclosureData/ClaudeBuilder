@@ -23,11 +23,11 @@ export type {
   AppraisalPropertyRecord,
   AppraisalSourceAccessMetadata,
 } from "./address-resolution/appraisalAdapter";
-export { scoreCandidates, resolveFromCandidates, getMatchThresholdsFromEnv } from "./address-resolution/scoring";
+export { scoreCandidates, resolveFromCandidates, getMatchThresholdsFromEnv, explainMatch } from "./address-resolution/scoring";
 export type { ScoringInput, ScoredCandidate, MatchThresholds } from "./address-resolution/scoring";
 export { normalizeOwnerName, ownerNamesLikelyRelated, surnamesMatch } from "./address-resolution/ownerNameNormalization";
 export type { NormalizedOwnerName } from "./address-resolution/ownerNameNormalization";
-export { parseLegalDescriptionTokens, normalizeToken, tokensOverlap } from "./address-resolution/legalDescriptionParsing";
+export { parseLegalDescriptionTokens, normalizeToken, tokensOverlap, buildLegalDescriptionCacheKey } from "./address-resolution/legalDescriptionParsing";
 export type { ParsedLegalDescriptionTokens } from "./address-resolution/legalDescriptionParsing";
 
 export { estimateRemainingBalance, BALANCE_ESTIMATE_DISCLAIMER } from "./loan/balanceEstimator";

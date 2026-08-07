@@ -23,11 +23,34 @@ export interface ScoredCandidate {
   conflictingFields: string[];
 }
 
+/**
+ * Confidence floors for named, canonical matching strategies — the
+ * additive WEIGHTS table below still drives fine-grained scoring across
+ * messy real-world partial matches, but these floors guarantee the
+ * headline strategies land at (or above) their product-specified
+ * confidence: exact parcel ID 99%, exact geographic ID 97%, subdivision +
+ * lot + block 97%, exact legal description 94%, owner name plus one more
+ * corroborating field 88%, owner name alone 65%. A floor never applies
+ * over a critical (lot/block) conflict — conflicting evidence always
+ * wins over a floor.
+ */
+function applyConfidenceFloor(score: number, matchedFields: string[], conflictingFields: string[]): number {
+  if (conflictingFields.some((f) => f === "lot" || f === "block")) return score;
+  if (matchedFields.includes("parcelId")) return Math.max(score, 0.99);
+  if (matchedFields.includes("geographicId")) return Math.max(score, 0.97);
+  if (matchedFields.includes("subdivision") && matchedFields.includes("lot")) return Math.max(score, 0.97);
+  if (matchedFields.includes("legalDescriptionTokens")) return Math.max(score, 0.94);
+  if (matchedFields.includes("ownerName") && matchedFields.length >= 2) return Math.max(score, 0.88);
+  if (matchedFields.length === 1 && matchedFields[0] === "ownerName") return Math.max(score, 0.65);
+  return score;
+}
+
 /** Weighted-evidence table — see docs in the class-level comment on scoreCandidates(). */
 const WEIGHTS = {
   parcelIdExact: 0.6,
   geographicIdExact: 0.55,
   subdivisionLotBlockExact: 0.5,
+  subdivisionOnly: 0.2,
   legalDescriptionTokenOverlap: 0.2,
   ownerNameMatch: 0.15,
   acreageExact: 0.1,
@@ -94,6 +117,13 @@ export function scoreCandidates(input: ScoringInput, candidates: AppraisalProper
         score += WEIGHTS.conflictingLotOrBlock;
         conflictingFields.push("block");
       }
+    } else if (input.subdivision && subdivisionMatches) {
+      // Subdivision is known but lot wasn't stated/parsed from the notice
+      // (search strategy F: owner name + subdivision) — a weaker standalone
+      // signal than a full subdivision+lot+block match, but still real
+      // corroborating evidence, not nothing.
+      score += WEIGHTS.subdivisionOnly;
+      matchedFields.push("subdivision");
     }
 
     if (input.legalDescriptionRawText && candidate.legalDescription) {
@@ -140,8 +170,29 @@ export function scoreCandidates(input: ScoringInput, candidates: AppraisalProper
       }
     }
 
-    return { candidate, score: clamp(score, 0, 1), matchedFields: dedupe(matchedFields), conflictingFields: dedupe(conflictingFields) };
+    const dedupedMatched = dedupe(matchedFields);
+    const dedupedConflicting = dedupe(conflictingFields);
+    const floored = applyConfidenceFloor(score, dedupedMatched, dedupedConflicting);
+    return { candidate, score: clamp(floored, 0, 1), matchedFields: dedupedMatched, conflictingFields: dedupedConflicting };
   });
+}
+
+/** One-line human explanation of why a specific candidate scored the way it did — used per-candidate in the admin review screen, distinct from resolveFromCandidates()'s top-pick explanation. */
+export function explainMatch(matchedFields: string[], conflictingFields: string[]): string {
+  if (matchedFields.length === 0 && conflictingFields.length === 0) return "No matching fields found.";
+  const parts: string[] = [];
+  if (matchedFields.includes("parcelId")) parts.push("exact parcel ID match");
+  else if (matchedFields.includes("geographicId")) parts.push("exact geographic ID match");
+  else if (matchedFields.includes("subdivision") && matchedFields.includes("lot")) parts.push("subdivision, lot, and block matched");
+  else if (matchedFields.includes("legalDescriptionTokens")) parts.push("legal description text matched");
+  else if (matchedFields.includes("ownerName") && matchedFields.includes("subdivision")) parts.push("owner name plus subdivision matched (no lot stated)");
+  else if (matchedFields.includes("subdivision")) parts.push("subdivision matched (no lot stated)");
+  else if (matchedFields.includes("ownerName") && matchedFields.length > 1) parts.push(`owner name plus ${matchedFields.filter((f) => f !== "ownerName").join(", ")}`);
+  else if (matchedFields.includes("ownerName")) parts.push("owner name only — weak signal, cannot auto-publish alone");
+  else if (matchedFields.length > 0) parts.push(`matched: ${matchedFields.join(", ")}`);
+
+  if (conflictingFields.length > 0) parts.push(`conflicting: ${conflictingFields.join(", ")}`);
+  return parts.join("; ") || "No matching fields found.";
 }
 
 /**
@@ -176,10 +227,15 @@ export function resolveFromCandidates(
   const margin = second ? top.score - second.score : top.score;
 
   const hasCriticalConflict = top.conflictingFields.some((f) => f === "lot" || f === "block");
+  // Owner name alone is never sufficient to auto-publish, regardless of
+  // how PROPERTY_MATCH_AUTO_ACCEPT_THRESHOLD is configured — this is a
+  // hard rule, not a threshold-tuning outcome.
+  const isOwnerNameAlone = top.matchedFields.length === 1 && top.matchedFields[0] === "ownerName";
   const method = methodFor(top, input);
 
   if (
     !hasCriticalConflict &&
+    !isOwnerNameAlone &&
     top.score >= thresholds.autoAcceptThreshold &&
     (candidates.length === 1 || margin >= thresholds.minimumMargin)
   ) {
@@ -202,7 +258,9 @@ export function resolveFromCandidates(
       resolutionMethod: method,
       explanation: hasCriticalConflict
         ? `The top candidate scored ${top.score.toFixed(2)} but has a conflicting ${top.conflictingFields.join("/")} — sent to manual review rather than auto-accepted.`
-        : `The top candidate scored ${top.score.toFixed(2)}, ${second ? `only ${margin.toFixed(2)} ahead of the next candidate (${second.score.toFixed(2)})` : "below the auto-accept threshold"} — sent to manual review.`,
+        : isOwnerNameAlone
+          ? `The top candidate matched on owner name only (score ${top.score.toFixed(2)}) — owner name alone is never sufficient to auto-publish, sent to manual review.`
+          : `The top candidate scored ${top.score.toFixed(2)}, ${second ? `only ${margin.toFixed(2)} ahead of the next candidate (${second.score.toFixed(2)})` : "below the auto-accept threshold"} — sent to manual review.`,
       matchedFields: top.matchedFields,
       conflictingFields: top.conflictingFields,
       candidateCount: candidates.length,

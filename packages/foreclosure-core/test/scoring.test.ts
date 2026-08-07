@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveFromCandidates, scoreCandidates, type ScoringInput } from "../src/address-resolution/scoring";
+import { resolveFromCandidates, scoreCandidates, explainMatch, type ScoringInput } from "../src/address-resolution/scoring";
 import type { AppraisalPropertyCandidate } from "@foreclosuredata/types";
 
 const record: AppraisalPropertyCandidate = {
@@ -24,6 +24,8 @@ const record: AppraisalPropertyCandidate = {
   marketValueCents: null,
   homestead: true,
   taxYear: 2026,
+  latitude: 26.1758,
+  longitude: -98.2375,
 };
 
 const baseInput: ScoringInput = {
@@ -97,5 +99,73 @@ describe("resolveFromCandidates", () => {
     const result = resolveFromCandidates(baseInput, [record], { autoAcceptThreshold: 1.5, reviewThreshold: 0.1, minimumMargin: 0.15 });
     // Score can never reach 1.5 (clamped at 1), so this must fall to manual review even though the candidate is a great match.
     expect(result.requiresManualReview).toBe(true);
+  });
+
+  it("never auto-accepts on owner name alone, even if the auto-accept threshold is misconfigured low", () => {
+    const ownerOnlyInput: ScoringInput = { ...baseInput, city: null, parcelId: null, geographicId: null, legalDescriptionRawText: null, subdivision: null, lot: null, block: null, acreage: null };
+    const ownerOnlyCandidate: AppraisalPropertyCandidate = { ...record, city: null, subdivision: null, lot: null, block: null, legalDescription: null, acreage: null };
+    const result = resolveFromCandidates(ownerOnlyInput, [ownerOnlyCandidate], { autoAcceptThreshold: 0.5, reviewThreshold: 0.3, minimumMargin: 0.1 });
+    expect(result.requiresManualReview).toBe(true);
+    expect(result.selectedCandidateId).toBeNull();
+  });
+});
+
+describe("confidence floors (product-specified anchors)", () => {
+  it("floors an exact-parcel-ID-only match at 0.99", () => {
+    const input: ScoringInput = { ownerNames: [], streetAddress: null, city: null, parcelId: "P-001", geographicId: null, legalDescriptionRawText: null, subdivision: null, lot: null, block: null, acreage: null, ownerMailingAddress: null };
+    const candidate: AppraisalPropertyCandidate = { ...record, ownerName: null, subdivision: null, lot: null, block: null, legalDescription: null, acreage: null };
+    const [scored] = scoreCandidates(input, [candidate]);
+    expect(scored!.score).toBeGreaterThanOrEqual(0.99);
+  });
+
+  it("floors an exact-geographic-ID-only match at 0.97", () => {
+    const input: ScoringInput = { ownerNames: [], streetAddress: null, city: null, parcelId: null, geographicId: "G-001", legalDescriptionRawText: null, subdivision: null, lot: null, block: null, acreage: null, ownerMailingAddress: null };
+    const candidate: AppraisalPropertyCandidate = { ...record, parcelId: null, ownerName: null, subdivision: null, lot: null, block: null, legalDescription: null, acreage: null };
+    const [scored] = scoreCandidates(input, [candidate]);
+    expect(scored!.score).toBeGreaterThanOrEqual(0.97);
+  });
+
+  it("floors a subdivision+lot+block-only match at 0.97", () => {
+    const input: ScoringInput = { ownerNames: [], streetAddress: null, city: null, parcelId: null, geographicId: null, legalDescriptionRawText: null, subdivision: "Sunrise Terrace Subdivision", lot: "14", block: "3", acreage: null, ownerMailingAddress: null };
+    const candidate: AppraisalPropertyCandidate = { ...record, parcelId: null, geographicId: null, ownerName: null, legalDescription: null, acreage: null };
+    const [scored] = scoreCandidates(input, [candidate]);
+    expect(scored!.score).toBeGreaterThanOrEqual(0.97);
+  });
+
+  it("floors owner name + one corroborating field (subdivision) at 0.88", () => {
+    const input: ScoringInput = { ownerNames: ["John A. Smith"], streetAddress: null, city: null, parcelId: null, geographicId: null, legalDescriptionRawText: null, subdivision: "Sunrise Terrace Subdivision", lot: null, block: null, acreage: null, ownerMailingAddress: null };
+    const candidate: AppraisalPropertyCandidate = { ...record, parcelId: null, geographicId: null, lot: null, block: null, legalDescription: null, acreage: null };
+    const [scored] = scoreCandidates(input, [candidate]);
+    expect(scored!.score).toBeGreaterThanOrEqual(0.88);
+    expect(scored!.score).toBeLessThan(0.97);
+  });
+
+  it("floors an owner-name-only match at 0.65 — a weak signal, not near auto-accept", () => {
+    const input: ScoringInput = { ownerNames: ["John A. Smith"], streetAddress: null, city: null, parcelId: null, geographicId: null, legalDescriptionRawText: null, subdivision: null, lot: null, block: null, acreage: null, ownerMailingAddress: null };
+    const candidate: AppraisalPropertyCandidate = { ...record, parcelId: null, geographicId: null, subdivision: null, lot: null, block: null, legalDescription: null, acreage: null };
+    const [scored] = scoreCandidates(input, [candidate]);
+    expect(scored!.score).toBeGreaterThanOrEqual(0.65);
+    expect(scored!.score).toBeLessThan(0.88);
+  });
+
+  it("never applies a floor over a critical lot/block conflict", () => {
+    const conflictingLot: AppraisalPropertyCandidate = { ...record, lot: "99" };
+    const [scored] = scoreCandidates(baseInput, [conflictingLot]);
+    expect(scored!.conflictingFields).toContain("lot");
+    expect(scored!.score).toBeLessThan(0.97);
+  });
+});
+
+describe("explainMatch", () => {
+  it("describes an owner-name-only match as a weak signal", () => {
+    expect(explainMatch(["ownerName"], [])).toMatch(/weak signal/i);
+  });
+
+  it("describes a parcel ID match plainly", () => {
+    expect(explainMatch(["parcelId"], [])).toMatch(/parcel id/i);
+  });
+
+  it("surfaces conflicting fields alongside matched ones", () => {
+    expect(explainMatch(["subdivision", "lot", "block"], ["ownerName"])).toMatch(/conflicting: ownerName/);
   });
 });

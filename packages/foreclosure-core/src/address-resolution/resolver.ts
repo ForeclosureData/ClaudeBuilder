@@ -128,34 +128,64 @@ export async function resolvePropertyAddress(
   };
 }
 
-/** Gathers candidates via every applicable search the adapter supports, deduped by sourcePropertyId. */
+/**
+ * Gathers candidates via every applicable strategy the adapter supports,
+ * deduped by sourcePropertyId, in priority order:
+ *   A. Parcel ID          B. Geographic ID       C. Subdivision (+lot/block, via scoring)
+ *   D. Legal description  E. Owner name alone    F. Owner name + subdivision
+ *   G. Owner name + acreage
+ * All applicable strategies run (not just until something is found) —
+ * scoring.ts, not this function, decides which candidates matter. Owner
+ * name is never the *only* thing tried: strategies A-D always run first
+ * when the notice has the data for them, and F/G exist specifically so an
+ * owner-name search is corroborated by a second field before scoring
+ * treats it as strong evidence (step H — fuzzy candidate scoring).
+ */
 async function gatherCandidates(input: ResolutionInput, adapter: CountyAppraisalAdapter): Promise<AppraisalPropertyCandidate[]> {
   const byId = new Map<string, AppraisalPropertyCandidate>();
   const add = (list: AppraisalPropertyCandidate[]) => {
     for (const c of list) byId.set(c.sourcePropertyId, c);
   };
 
+  // A. Parcel ID
   if (input.propertyIdFromNotice && adapter.capabilities.searchByParcelId) {
     add(await adapter.searchProperties({ parcelId: input.propertyIdFromNotice }));
   }
+  // B. Geographic ID
   if (input.geographicIdFromNotice && adapter.capabilities.searchByParcelId) {
     add(await adapter.searchProperties({ geographicId: input.geographicIdFromNotice }));
   }
+  // C. Subdivision — deliberately searched alone (not filtered by lot/block
+  // too): a subdivision search should return every lot in it, so scoring.ts
+  // can both confirm an exact subdivision+lot+block match *and* detect a
+  // conflicting one (a different lot in the same subdivision). Filtering by
+  // lot here would silently hide that conflict from the scorer.
   if (input.legalDescription?.subdivision && adapter.capabilities.searchBySubdivision) {
-    // Deliberately search by subdivision alone (not lot/block too) — a
-    // subdivision search should return every lot in it, so scoring.ts can
-    // both confirm an exact lot/block match *and* detect a conflicting one
-    // (a different lot in the same subdivision). Filtering by lot here
-    // would silently hide that conflict from the scorer.
     add(await adapter.searchProperties({ subdivision: input.legalDescription.subdivision }));
   }
-  if (input.legalDescription?.rawText && adapter.capabilities.searchByLegalDescription && byId.size === 0) {
+  // D. Legal description (full text)
+  if (input.legalDescription?.rawText && adapter.capabilities.searchByLegalDescription) {
     add(await adapter.searchProperties({ legalDescription: input.legalDescription.rawText }));
   }
-  if (input.ownerNames.length && adapter.capabilities.searchByOwnerName) {
-    const variants = input.ownerNames.flatMap((n) => normalizeOwnerName(n).people);
-    add(await adapter.searchProperties({ ownerNames: variants.length ? variants : input.ownerNames }));
+
+  const ownerVariants = input.ownerNames.flatMap((n) => normalizeOwnerName(n).people);
+  const ownerQueryNames = ownerVariants.length ? ownerVariants : input.ownerNames;
+
+  // E. Owner name alone
+  if (ownerQueryNames.length && adapter.capabilities.searchByOwnerName) {
+    add(await adapter.searchProperties({ ownerNames: ownerQueryNames }));
   }
+  // F. Owner name + subdivision
+  if (ownerQueryNames.length && input.legalDescription?.subdivision && adapter.capabilities.searchByOwnerName && adapter.capabilities.searchBySubdivision) {
+    add(await adapter.searchProperties({ ownerNames: ownerQueryNames, subdivision: input.legalDescription.subdivision }));
+  }
+  // G. Owner name + acreage
+  if (ownerQueryNames.length && input.legalDescription?.acreage != null && adapter.capabilities.searchByOwnerName) {
+    add(await adapter.searchProperties({ ownerNames: ownerQueryNames, acreage: input.legalDescription.acreage }));
+  }
+
+  // H. Fuzzy candidate scoring happens downstream in scoring.ts against
+  // this full gathered set, not as a separate search step here.
 
   return Array.from(byId.values());
 }

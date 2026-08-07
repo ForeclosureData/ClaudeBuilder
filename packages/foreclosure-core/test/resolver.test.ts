@@ -25,6 +25,8 @@ const baseRecord: AppraisalPropertyCandidate = {
   marketValueCents: 19_000_00,
   homestead: true,
   taxYear: 2026,
+  latitude: 26.1758,
+  longitude: -98.2375,
 };
 
 describe("resolvePropertyAddress", () => {
@@ -76,7 +78,7 @@ describe("resolvePropertyAddress", () => {
     expect(result.resolution.requiresManualReview).toBe(false);
   });
 
-  it("flags multiple plausible legal-description matches as unresolved rather than guessing", async () => {
+  it("sends tied legal-description matches to manual review rather than guessing, even at high confidence", async () => {
     const secondRecord: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-002", parcelId: "P-002", geographicId: "G-002", ownerName: "Maria Garcia", situsAddress: "2 Other St" };
     const adapter = new MockCountyAppraisalAdapter([baseRecord, secondRecord]);
     const result = await resolvePropertyAddress(
@@ -98,9 +100,14 @@ describe("resolvePropertyAddress", () => {
       },
       adapter,
     );
-    expect(result.address.addressResolutionMethod).toBe("UNRESOLVED");
+    // Both candidates share the same subdivision/lot/block (a strong,
+    // high-confidence pattern), but neither can be told apart, so this must
+    // never auto-publish — the resolved address stays null and the case
+    // requires manual review regardless of how confident the pattern is.
     expect(result.address.resolvedAddress).toBeNull();
+    expect(result.address.propertyId).toBeNull();
     expect(result.resolution.requiresManualReview).toBe(true);
+    expect(result.resolution.selectedCandidateId).toBeNull();
     expect(result.candidates.length).toBe(2);
   });
 

@@ -78,3 +78,27 @@ export function tokensOverlap(a: string | null | undefined, b: string | null | u
   if (!na || !nb) return false;
   return na === nb || na.includes(nb) || nb.includes(na);
 }
+
+/**
+ * Builds a stable cache key for reusing a previously successful CAD match
+ * against a later foreclosure case carrying the same legal description —
+ * see ResolvedLegalDescriptionMatch. Prefers subdivision+lot+block (the
+ * strongest, most stable identifier a notice typically states); falls
+ * back to the normalized raw legal text when no subdivision was parsed.
+ * Returns null when there's nothing stable enough to key on.
+ */
+export function buildLegalDescriptionCacheKey(input: {
+  subdivision?: string | null;
+  lot?: string | null;
+  block?: string | null;
+  rawText?: string | null;
+}): string | null {
+  const subdivision = normalizeToken(input.subdivision);
+  if (subdivision) {
+    const lot = normalizeToken(input.lot);
+    const block = normalizeToken(input.block);
+    return `SUBDIVISION:${subdivision}|LOT:${lot}|BLOCK:${block}`;
+  }
+  const rawText = normalizeToken(input.rawText);
+  return rawText ? `RAWTEXT:${rawText}` : null;
+}
