@@ -47,6 +47,8 @@ interface CoverSheetResult {
   documentType: string | null;
   recordedOn: string | null;
   costCents: number;
+  /** The model's raw text response — only useful for diagnosing a parse failure, not part of the "real" result. */
+  rawResponse: string;
 }
 
 export async function splitHidalgoBundle(pdfBytes: Buffer, options: SplitBundleOptions = {}): Promise<SplitBundleResult> {
@@ -81,7 +83,7 @@ export async function splitHidalgoBundle(pdfBytes: Buffer, options: SplitBundleO
       // Stop rather than guess at page ranges — this and any remaining
       // pages in the bundle need manual attention.
       stoppedEarly = true;
-      stopReason = `Page ${page} did not parse as a recording cover sheet (documentNumber=${cover.documentNumber}, numberOfPages=${cover.numberOfPages})`;
+      stopReason = `Page ${page} did not parse as a recording cover sheet (documentNumber=${cover.documentNumber}, numberOfPages=${cover.numberOfPages}). Raw model response: ${cover.rawResponse.slice(0, 500)}`;
       break;
     }
 
@@ -147,9 +149,10 @@ async function classifyCoverSheet(
       documentType: typeof parsed.documentType === "string" ? parsed.documentType : null,
       recordedOn: typeof parsed.recordedOn === "string" ? parsed.recordedOn : null,
       costCents,
+      rawResponse: raw,
     };
   } catch {
-    return { documentNumber: null, numberOfPages: null, documentType: null, recordedOn: null, costCents };
+    return { documentNumber: null, numberOfPages: null, documentType: null, recordedOn: null, costCents, rawResponse: raw };
   }
 }
 
