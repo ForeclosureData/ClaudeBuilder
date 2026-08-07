@@ -173,7 +173,8 @@ async function runProduction(): Promise<void> {
   console.log(`Records created (new): ${summary.noticesPersisted}`);
   console.log(`Duplicates skipped: ${summary.noticesDuplicate}`);
   console.log(`Records sent to manual review: ${summary.noticesRequiringManualReview}`);
-  console.log(`Failed records: ${summary.errors.length}`);
+  console.log(`Notices failed (unexpected error, skipped): ${summary.noticesFailed}`);
+  console.log(`Total errors logged (bundle + notice failures): ${summary.errors.length}`);
   if (summary.errors.length > 0) {
     console.log(`\nErrors:`);
     for (const err of summary.errors) console.log(`  - ${redact(err)}`);

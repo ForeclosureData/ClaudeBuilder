@@ -31,7 +31,7 @@ export interface NoticeReportEntry {
   documentNumber: string | null;
   bundleUrl: string;
   pageRange: string | null;
-  outcome: "persisted" | "duplicate" | "extraction_failed" | "low_confidence_transcription";
+  outcome: "persisted" | "duplicate" | "extraction_failed" | "low_confidence_transcription" | "failed";
   saleDateIso: string | null;
   legalDescriptionSummary: string | null;
   addressResolutionMethod: string | null;
@@ -54,6 +54,8 @@ export interface IngestionRunSummary {
   noticesExtracted: number;
   noticesDuplicate: number;
   noticesPersisted: number;
+  /** Notices whose processing threw an unexpected error (e.g. a data-shape surprise from an upstream source) -- recorded and skipped rather than aborting the whole run. */
+  noticesFailed: number;
   noticesRequiringManualReview: number;
   /** Notices whose content came from local OCR (adapter-reported contentSource === "ocr"). 0 for adapters/runs that don't use OCR. */
   noticesOcrSuccess: number;
@@ -109,6 +111,7 @@ export async function ingestForeclosureNotices(
     noticesExtracted: 0,
     noticesDuplicate: 0,
     noticesPersisted: 0,
+    noticesFailed: 0,
     noticesRequiringManualReview: 0,
     noticesOcrSuccess: 0,
     noticesContentClaudeFallback: 0,
@@ -238,14 +241,39 @@ export async function ingestForeclosureNotices(
         ocrConfidenceCount++;
       }
 
-      const entry = await processSingleNotice({
-        county,
-        countySourceKey: adapter.adapterKey,
-        bundleSourceUrl: notice.sourceUrl,
-        bundledNotice,
-        appraisalAdapter,
-        budget,
-      });
+      // A single notice's unexpected failure (e.g. an upstream data-shape
+      // surprise) must never abort the rest of the batch -- recorded as one
+      // "failed" outcome and the loop continues to the next notice, so a
+      // bounded run's failure count is accurate instead of the whole run
+      // dying partway through.
+      let entry: { report: NoticeReportEntry };
+      try {
+        entry = await processSingleNotice({
+          county,
+          countySourceKey: adapter.adapterKey,
+          bundleSourceUrl: notice.sourceUrl,
+          bundledNotice,
+          appraisalAdapter,
+          budget,
+        });
+      } catch (err) {
+        summary.noticesFailed++;
+        summary.errors.push(`processSingleNotice(${bundledNotice.countyFilingNumber ?? bundledNotice.externalId}) failed: ${errMessage(err)}`);
+        summary.perNoticeReport.push({
+          documentNumber: bundledNotice.countyFilingNumber,
+          bundleUrl: notice.sourceUrl,
+          pageRange: null,
+          outcome: "failed",
+          saleDateIso: null,
+          legalDescriptionSummary: null,
+          addressResolutionMethod: null,
+          addressResolutionConfidence: null,
+          manualReviewReasons: [],
+          overallExtractionConfidence: null,
+          aiFallbackUsed: false,
+        });
+        continue;
+      }
       summary.perNoticeReport.push(entry.report);
       if (entry.report.outcome === "duplicate") summary.noticesDuplicate++;
       else if (entry.report.outcome === "persisted") {
