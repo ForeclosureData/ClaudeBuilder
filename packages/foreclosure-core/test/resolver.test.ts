@@ -180,6 +180,81 @@ describe("resolvePropertyAddress", () => {
     expect(result.address.resolvedAddress).toBe(baseRecord.situsAddress);
   });
 
+  it("enriches an explicit-stated-address case with a single unambiguous CAD match whose owner name agrees with the notice", async () => {
+    const adapter = new MockCountyAppraisalAdapter([baseRecord]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: baseRecord.situsAddress!,
+        statedAddressMethod: "EXPLICIT_STATED",
+        legalDescription: null,
+        ownerNames: ["John A. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    expect(result.address.resolvedAddress).toBe(baseRecord.situsAddress);
+    expect(result.selectedCandidate?.sourcePropertyId).toBe(baseRecord.sourcePropertyId);
+  });
+
+  it("refuses to enrich an explicit-stated-address case when the sole CAD match's owner name is unrelated to the notice's borrower -- the property may have changed hands since the notice was filed", async () => {
+    const adapter = new MockCountyAppraisalAdapter([baseRecord]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: baseRecord.situsAddress!,
+        statedAddressMethod: "EXPLICIT_STATED",
+        legalDescription: null,
+        ownerNames: ["Someone Entirely Different"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    // The notice-stated address itself is untouched either way.
+    expect(result.address.resolvedAddress).toBe(baseRecord.situsAddress);
+    expect(result.address.addressResolutionMethod).toBe("EXPLICIT_STATED");
+    // But no valuation data gets attached to a record with a conflicting owner.
+    expect(result.selectedCandidate).toBeNull();
+    expect(result.address.propertyId).toBeNull();
+  });
+
+  it("still enriches from an unambiguous address-only match even when a broader owner-name strategy adds unrelated noise to the full candidate pool", async () => {
+    const unrelatedSameSurname: AppraisalPropertyCandidate = {
+      ...baseRecord,
+      sourcePropertyId: "P-999",
+      parcelId: "P-999",
+      geographicId: "G-999",
+      situsAddress: "42 Somewhere Else Rd, Weslaco, TX 78596",
+      lot: "40",
+      block: "9",
+    };
+    const adapter = new MockCountyAppraisalAdapter([baseRecord, unrelatedSameSurname]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: baseRecord.situsAddress!,
+        statedAddressMethod: "EXPLICIT_STATED",
+        legalDescription: null,
+        ownerNames: ["John A. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    // The owner-alone strategy also matches `unrelatedSameSurname` (same
+    // surname, unrelated property), so the full candidate pool has 2
+    // entries -- but the address search alone found exactly baseRecord,
+    // and that's what should get attached, not "give up because the pool
+    // isn't unambiguous."
+    expect(result.candidates.length).toBeGreaterThan(1);
+    expect(result.selectedCandidate?.sourcePropertyId).toBe(baseRecord.sourcePropertyId);
+  });
+
   it("routes a conflicting lot number to manual review even when the subdivision and owner both match", async () => {
     const conflictingLot: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-003", parcelId: null, geographicId: null, lot: "99" };
     const adapter = new MockCountyAppraisalAdapter([conflictingLot]);

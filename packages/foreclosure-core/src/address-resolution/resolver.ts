@@ -71,8 +71,8 @@ export async function resolvePropertyAddress(
     // parcel ID, etc.) -- pickEnrichmentCandidate() only attaches that data
     // when a single unambiguous match is found, never on owner-name-alone
     // evidence, and never touches resolvedAddress/addressResolutionMethod.
-    const { candidates, requestsUsed } = await gatherCandidates(input, appraisalAdapter, budget);
-    const enrichment = pickEnrichmentCandidate(candidates, input);
+    const { candidates, requestsUsed, addressOnlyCandidates } = await gatherCandidates(input, appraisalAdapter, budget);
+    const enrichment = pickEnrichmentCandidate(candidates, input, addressOnlyCandidates);
 
     return {
       address: {
@@ -154,31 +154,101 @@ export async function resolvePropertyAddress(
  * Only used for cases whose address was already explicitly stated in the
  * notice (the CAD is enrichment-only there, never a resolution source) --
  * separate from, and deliberately simpler than, scoring.ts's full fuzzy
- * scorer. Attaches valuation data only when exactly one CAD candidate is
- * unambiguous: either it's the sole result and doesn't contradict a known
- * lot/block, or lot+block from the notice narrows multiple results down
- * to exactly one. Anything less certain enriches nothing rather than
- * guessing -- false enrichment on the wrong parcel is worse than none.
+ * scorer. Attaches valuation data only when a match is unambiguous.
+ * Anything less certain enriches nothing rather than guessing -- false
+ * enrichment on the wrong parcel is worse than none.
+ *
+ * Checked in order:
+ *   1. The situs-address search alone (see gatherCandidates' step 0),
+ *      when it returned exactly one result -- the single most selective
+ *      strategy available, so it's trusted even when broader strategies
+ *      (owner-alone, subdivision-alone) added unrelated candidates to the
+ *      full pool below for conflict-detection purposes. If that one
+ *      address match conflicts on lot/block or owner name, this returns
+ *      null outright rather than falling through to weaker evidence --
+ *      an address match that contradicts the notice's own legal
+ *      description/owner is a red flag, not something to paper over.
+ *   2. Otherwise, the full gathered pool: either it's the sole candidate
+ *      and doesn't contradict a known lot/block/owner, or lot+block from
+ *      the notice narrows multiple results down to exactly one.
+ *
+ * Also refuses a candidate whose owner name is clearly unrelated to the
+ * notice's borrower(s) -- confirmed live: an address+legal-description
+ * match can still belong to a *different current owner* than the notice's
+ * defaulting borrower (the property may have already changed hands since
+ * the notice was filed), which the address/lot check alone wouldn't catch.
+ * This only tightens acceptance, never loosens it.
  */
-function pickEnrichmentCandidate(candidates: AppraisalPropertyCandidate[], input: ResolutionInput): AppraisalPropertyCandidate | null {
-  if (candidates.length === 0) return null;
-
+function pickEnrichmentCandidate(
+  candidates: AppraisalPropertyCandidate[],
+  input: ResolutionInput,
+  addressOnlyCandidates: AppraisalPropertyCandidate[] | null,
+): AppraisalPropertyCandidate | null {
   const lot = input.legalDescription?.lot ?? null;
   const block = input.legalDescription?.block ?? null;
+  const conflicts = (c: AppraisalPropertyCandidate) =>
+    (lot !== null && c.lot !== null && normalizeToken(c.lot) !== normalizeToken(lot)) ||
+    (block !== null && c.block !== null && normalizeToken(c.block) !== normalizeToken(block)) ||
+    ownerNameConflicts(c.ownerName, input.ownerNames);
+
+  if (addressOnlyCandidates && addressOnlyCandidates.length === 1) {
+    const only = addressOnlyCandidates[0]!;
+    return conflicts(only) ? null : only;
+  }
+
+  if (candidates.length === 0) return null;
 
   if (candidates.length === 1) {
     const only = candidates[0]!;
-    if (lot && only.lot && normalizeToken(only.lot) !== normalizeToken(lot)) return null;
-    if (block && only.block && normalizeToken(only.block) !== normalizeToken(block)) return null;
-    return only;
+    return conflicts(only) ? null : only;
   }
 
   if (lot && block) {
-    const exact = candidates.filter((c) => c.lot && normalizeToken(c.lot) === normalizeToken(lot) && c.block && normalizeToken(c.block) === normalizeToken(block));
+    const exact = candidates.filter(
+      (c) => c.lot && normalizeToken(c.lot) === normalizeToken(lot) && c.block && normalizeToken(c.block) === normalizeToken(block) && !ownerNameConflicts(c.ownerName, input.ownerNames),
+    );
     if (exact.length === 1) return exact[0]!;
   }
 
   return null;
+}
+
+const NAME_SUFFIX_WORDS = new Set(["JR", "SR", "II", "III", "IV", "V"]);
+
+/**
+ * Significant, comparable tokens from a raw name string: uppercased,
+ * punctuation stripped, split on whitespace/"&", suffixes and single-
+ * letter middle initials dropped. Deliberately simpler than (and doesn't
+ * reuse) ownerNameNormalization.ts's first/last-name splitting, which
+ * assumes a "First ... Last" token order -- CAD's own displayName format
+ * is "Surname First Middle" and, for a multi-person household, often a
+ * single compound string ("CISNEROS JOSE ALBERTO JR & GABRIELA ISABEL"),
+ * neither of which that splitter handles correctly. A plain token-overlap
+ * check needs no name-order assumption to tell "these are almost
+ * certainly the same household" from "these are unrelated people."
+ */
+function significantNameTokens(name: string): Set<string> {
+  return new Set(
+    name
+      .toUpperCase()
+      .replace(/[.,]/g, "")
+      .split(/[\s&]+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 1 && !NAME_SUFFIX_WORDS.has(t)),
+  );
+}
+
+/** True only when both a candidate owner name and at least one notice-stated owner name exist, and they share no significant name token -- i.e. an actual, checkable mismatch, not merely "we don't know." */
+function ownerNameConflicts(candidateOwnerName: string | null, inputOwnerNames: string[]): boolean {
+  if (!candidateOwnerName || inputOwnerNames.length === 0) return false;
+  const candidateTokens = significantNameTokens(candidateOwnerName);
+  if (candidateTokens.size === 0) return false;
+  const anyOverlap = inputOwnerNames.some((name) => {
+    const inputTokens = significantNameTokens(name);
+    for (const token of inputTokens) if (candidateTokens.has(token)) return true;
+    return false;
+  });
+  return !anyOverlap;
 }
 
 function normalizeToken(value: string): string {
@@ -187,39 +257,60 @@ function normalizeToken(value: string): string {
 
 /**
  * Gathers candidates via every applicable strategy the adapter supports,
- * deduped by sourcePropertyId, in priority order:
- *   A. Parcel ID          B. Geographic ID       C. Subdivision (+lot/block, via scoring)
- *   D. Legal description  E. Owner name alone    F. Owner name + subdivision
- *   G. Owner name + acreage
+ * deduped by sourcePropertyId, in priority order (most selective first):
+ *   0. Situs address (only when the notice already states one)
+ *   A. Parcel ID          B. Geographic ID       C. Subdivision (+lot/block)
+ *   D. Legal description  F. Owner name + subdivision (+lot)
+ *   G. Owner name + acreage   E. Owner name alone (last resort)
  * All applicable strategies run (not just until something is found) —
  * scoring.ts, not this function, decides which candidates matter. Owner
- * name is never the *only* thing tried: strategies A-D always run first
- * when the notice has the data for them, and F/G exist specifically so an
- * owner-name search is corroborated by a second field before scoring
- * treats it as strong evidence (step H — fuzzy candidate scoring).
+ * name alone (E) is deliberately tried *last*: F/G corroborate an owner
+ * search with a second field first, and even E itself asks the adapter to
+ * prefer a precise full-name match over a broad surname sweep (see
+ * appraisalAdapter.ts) before scoring ever sees the result (step H —
+ * fuzzy candidate scoring).
  *
- * `budget`, when provided, caps how many of these strategies actually
- * reach the adapter -- once exhausted, remaining strategies are simply
- * skipped (not retried later), same as if the notice lacked that data.
+ * `budget`, when provided, is threaded all the way into the adapter (see
+ * AppraisalRequestBudget) so it bounds every real HTTP request the
+ * adapter makes for a strategy -- including every page fetched inside a
+ * single searchProperties() call, not just "1 request per strategy".
+ * `requestsUsed` in the return value reflects that same real count
+ * (falling back to a per-strategy-attempted count when no budget object
+ * is supplied, e.g. the fixture/mock adapter in tests).
  */
 async function gatherCandidates(
   input: ResolutionInput,
   adapter: CountyAppraisalAdapter,
   budget?: RequestBudget,
-): Promise<{ candidates: AppraisalPropertyCandidate[]; requestsUsed: number }> {
+): Promise<{ candidates: AppraisalPropertyCandidate[]; requestsUsed: number; addressOnlyCandidates: AppraisalPropertyCandidate[] | null }> {
   const byId = new Map<string, AppraisalPropertyCandidate>();
-  let requestsUsed = 0;
+  const initialRemaining = budget?.remaining;
+  let strategiesAttempted = 0;
   const add = (list: AppraisalPropertyCandidate[]) => {
     for (const c of list) byId.set(c.sourcePropertyId, c);
   };
   const hasBudget = () => budget === undefined || budget.remaining > 0;
   const spend = async (query: Parameters<CountyAppraisalAdapter["searchProperties"]>[0]) => {
-    if (!hasBudget()) return;
-    if (budget) budget.remaining -= 1;
-    requestsUsed += 1;
-    add(await adapter.searchProperties(query));
+    if (!hasBudget()) return null;
+    strategiesAttempted += 1;
+    const result = await adapter.searchProperties(query, budget);
+    add(result);
+    return result;
   };
 
+  // 0. Situs address -- the most selective query the adapter supports, so
+  // it's tried before any broader subdivision/owner sweep whenever the
+  // notice already states one (mainly matters for the enrichment path,
+  // since this function's other caller -- the no-stated-address path --
+  // naturally has nothing here to search on). Its own result is tracked
+  // separately (not just merged into the pool) so pickEnrichmentCandidate
+  // can trust an unambiguous address match even when a later, broader
+  // strategy (owner-alone, subdivision-alone) adds unrelated candidates
+  // to the pool for conflict-detection purposes.
+  let addressOnlyCandidates: AppraisalPropertyCandidate[] | null = null;
+  if (input.statedPropertyAddress && adapter.capabilities.searchByAddress) {
+    addressOnlyCandidates = await spend({ streetAddress: input.statedPropertyAddress });
+  }
   // A. Parcel ID
   if (input.propertyIdFromNotice && adapter.capabilities.searchByParcelId) {
     await spend({ parcelId: input.propertyIdFromNotice });
@@ -228,13 +319,19 @@ async function gatherCandidates(
   if (input.geographicIdFromNotice && adapter.capabilities.searchByParcelId) {
     await spend({ geographicId: input.geographicIdFromNotice });
   }
-  // C. Subdivision — deliberately searched alone (not filtered by lot/block
-  // too): a subdivision search should return every lot in it, so scoring.ts
-  // can both confirm an exact subdivision+lot+block match *and* detect a
-  // conflicting one (a different lot in the same subdivision). Filtering by
-  // lot here would silently hide that conflict from the scorer.
+  // C. Subdivision (+ lot/block when known) — still searched by
+  // subdivision alone rather than lot-filtered only: a subdivision search
+  // should surface every lot in it, so scoring.ts can both confirm an
+  // exact subdivision+lot+block match *and* detect a conflicting one (a
+  // different lot in the same subdivision). The adapter narrows to the
+  // exact lot when it can and paginates until it finds it (or gives up),
+  // but always falls back to the full set rather than hiding a conflict.
   if (input.legalDescription?.subdivision && adapter.capabilities.searchBySubdivision) {
-    await spend({ subdivision: input.legalDescription.subdivision });
+    await spend({
+      subdivision: input.legalDescription.subdivision,
+      lot: input.legalDescription.lot ?? undefined,
+      block: input.legalDescription.block ?? undefined,
+    });
   }
   // D. Legal description (full text)
   if (input.legalDescription?.rawText && adapter.capabilities.searchByLegalDescription) {
@@ -244,21 +341,26 @@ async function gatherCandidates(
   const ownerVariants = input.ownerNames.flatMap((n) => normalizeOwnerName(n).people);
   const ownerQueryNames = ownerVariants.length ? ownerVariants : input.ownerNames;
 
-  // E. Owner name alone
-  if (ownerQueryNames.length && adapter.capabilities.searchByOwnerName) {
-    await spend({ ownerNames: ownerQueryNames });
-  }
-  // F. Owner name + subdivision
+  // F. Owner name + subdivision (+ lot, so the adapter can stop paginating
+  // once the exact lot appears)
   if (ownerQueryNames.length && input.legalDescription?.subdivision && adapter.capabilities.searchByOwnerName && adapter.capabilities.searchBySubdivision) {
-    await spend({ ownerNames: ownerQueryNames, subdivision: input.legalDescription.subdivision });
+    await spend({ ownerNames: ownerQueryNames, subdivision: input.legalDescription.subdivision, lot: input.legalDescription.lot ?? undefined });
   }
   // G. Owner name + acreage
   if (ownerQueryNames.length && input.legalDescription?.acreage != null && adapter.capabilities.searchByOwnerName) {
     await spend({ ownerNames: ownerQueryNames, acreage: input.legalDescription.acreage });
   }
+  // E. Owner name alone -- last resort; see appraisalAdapter.ts for why
+  // this still isn't simply "the broadest possible search" (it tries the
+  // complete stated name as one precise full-text query before falling
+  // back to a bare-surname sweep).
+  if (ownerQueryNames.length && adapter.capabilities.searchByOwnerName) {
+    await spend({ ownerNames: ownerQueryNames });
+  }
 
   // H. Fuzzy candidate scoring happens downstream in scoring.ts against
   // this full gathered set, not as a separate search step here.
 
-  return { candidates: Array.from(byId.values()), requestsUsed };
+  const requestsUsed = budget && initialRemaining !== undefined ? initialRemaining - budget.remaining : strategiesAttempted;
+  return { candidates: Array.from(byId.values()), requestsUsed, addressOnlyCandidates };
 }

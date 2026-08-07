@@ -286,6 +286,17 @@ export interface AppraisalSourceAccessMetadata {
 }
 
 /**
+ * Caps how many real network requests an adapter may spend across a whole
+ * resolution attempt (all search strategies, and -- for adapters that
+ * paginate internally -- every page fetch within each strategy). Mutated
+ * in place by the adapter as requests are spent; a fixture/mock adapter
+ * can safely ignore it since it makes no real requests.
+ */
+export interface AppraisalRequestBudget {
+  remaining: number;
+}
+
+/**
  * Provider-neutral interface for a county appraisal district data source.
  * Implementations must only use access methods the source's own terms
  * permit (official API, approved bulk-data file, licensed vendor feed,
@@ -313,7 +324,7 @@ export interface CountyAppraisalAdapter {
     officialApiAvailable: boolean;
   };
 
-  searchProperties(query: AppraisalPropertySearchQuery): Promise<AppraisalPropertyCandidate[]>;
+  searchProperties(query: AppraisalPropertySearchQuery, budget?: AppraisalRequestBudget): Promise<AppraisalPropertyCandidate[]>;
   getPropertyDetails(sourcePropertyId: string): Promise<AppraisalPropertyRecord>;
   getAccessMetadata(): Promise<AppraisalSourceAccessMetadata>;
 }

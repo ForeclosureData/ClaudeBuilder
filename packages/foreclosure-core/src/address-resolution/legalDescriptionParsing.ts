@@ -35,6 +35,15 @@ const GEOGRAPHIC_ID_RE = /\b(?:GEOGRAPHIC\s+ID|GEO\s+ID)\s*[:#]?\s*([0-9A-Z\-]+)
 // county/state boilerplate or the first comma-separated clause naming
 // "AN ADDITION TO..." — captured loosely, kept as-is (not over-parsed).
 const SUBDIVISION_RE = /(?:,\s*)?([A-Z0-9 .'\-&]+?(?:SUBDIVISION|ADDITION|ESTATES|TOWNSITE|PARK|PLACE|HEIGHTS|ACRES|MEADOWS|VILLAGE|VILLA[SE]?|COVES?))\b/i;
+// Fallback for terse tax-roll style legal descriptions that never use any
+// of the SUBDIVISION_RE classification words at all -- confirmed live,
+// this is actually the common case for Hidalgo CAD's own legalDescription
+// field (e.g. "SOL BRILLA PH 1 LOT 1", "INDIAN HARBOR LOT 39", "LAS PALMAS
+// DEL VALLE UT 2 LOT 28 BLK 1"): everything before the first "LOT" is the
+// subdivision name, with a trailing phase/unit/section+number qualifier
+// (if any) stripped back off.
+const BEFORE_LOT_RE = /^(.+?)\s+LOTS?\b/i;
+const TRAILING_PHASE_UNIT_SECTION_RE = /\s+(?:PH|PHASE|UT|UNIT|SEC|SECTION)\.?\s*[0-9A-Z]+$/i;
 
 export function parseLegalDescriptionTokens(rawText: string): ParsedLegalDescriptionTokens {
   const text = rawText.replace(/\s+/g, " ").trim();
@@ -55,8 +64,15 @@ export function parseLegalDescriptionTokens(rawText: string): ParsedLegalDescrip
     })(),
     propertyIdNumber: matchGroup(text, PROPERTY_ID_RE),
     geographicId: matchGroup(text, GEOGRAPHIC_ID_RE),
-    subdivision: matchGroup(text, SUBDIVISION_RE)?.trim() ?? null,
+    subdivision: matchGroup(text, SUBDIVISION_RE)?.trim() ?? subdivisionFromBeforeLot(text),
   };
+}
+
+function subdivisionFromBeforeLot(text: string): string | null {
+  const beforeLot = text.match(BEFORE_LOT_RE)?.[1]?.trim();
+  if (!beforeLot) return null;
+  const withoutQualifier = beforeLot.replace(TRAILING_PHASE_UNIT_SECTION_RE, "").trim();
+  return withoutQualifier || null;
 }
 
 function matchGroup(text: string, pattern: RegExp): string | null {

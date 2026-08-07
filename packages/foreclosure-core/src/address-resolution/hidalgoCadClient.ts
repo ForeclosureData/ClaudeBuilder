@@ -4,10 +4,9 @@
  * mechanism were reverse-engineered entirely from the portal's own
  * public, unauthenticated client-side JavaScript (shipped to every
  * visitor of https://hidalgo.prodigycad.com/property-search), confirmed
- * against a handful of real test requests using non-personal search
- * terms (a subdivision name, a street name). The product owner manually
- * verified the ordinary public search flow requires no login, no
- * CAPTCHA, and no payment.
+ * against real test requests. The product owner manually verified the
+ * ordinary public search flow requires no login, no CAPTCHA, and no
+ * payment.
  *
  * Token flow: POST {API_BASE}/trueprodigy/cadpublic/auth/token with
  * {"office": "Hidalgo"} returns a short-lived (5-minute, confirmed via
@@ -24,12 +23,16 @@
  * non-public endpoint in the same bundle; confirmed by testing).
  *
  * Deliberately conservative for the pilot: a single request in flight at
- * a time, a configurable minimum delay between requests, and results
- * cached in-memory by exact query so the same term is never re-fetched
- * within a process. Per-notice request budgets are enforced by the
- * caller (see resolver.ts's RequestBudget), not here.
+ * a time, a configurable minimum delay between requests, every page of
+ * every query cached in-memory so a repeated resolution attempt never
+ * re-fetches, and controlled pagination (see `paginate` below) rather
+ * than an unbounded "fetch everything" loop. The per-notice request cap
+ * is enforced by the caller threading an AppraisalRequestBudget through
+ * (see resolver.ts's RequestBudget) -- every real HTTP call this client
+ * makes, across every page of every search strategy, spends from that
+ * same shared budget.
  */
-import type { AppraisalPropertyCandidate } from "@foreclosuredata/types";
+import type { AppraisalPropertyCandidate, AppraisalRequestBudget } from "@foreclosuredata/types";
 import { parseLegalDescriptionTokens } from "./legalDescriptionParsing";
 
 const API_BASE = "https://prod-container.trueprodigyapi.com";
@@ -38,6 +41,8 @@ const PORTAL_URL = "https://hidalgo.prodigycad.com/property-search";
 
 const REQUEST_DELAY_MS = Number(process.env.HIDALGO_CAD_REQUEST_DELAY_MS ?? 2000);
 const CONCURRENCY = Number(process.env.HIDALGO_CAD_CONCURRENCY ?? 1);
+const PAGE_SIZE = Number(process.env.HIDALGO_CAD_PAGE_SIZE ?? 20);
+const MAX_PAGES_PER_SEARCH = Number(process.env.HIDALGO_CAD_MAX_PAGES_PER_SEARCH ?? 5);
 
 if (CONCURRENCY !== 1) {
   // Only concurrency=1 has been validated against the real API during the
@@ -135,7 +140,7 @@ async function getCurrentYear(): Promise<number> {
   });
 }
 
-/** Shape of a raw property row as returned by both /public/property/search and /public/property/searchfulltext -- confirmed by inspection of a live response. Only the fields this adapter actually uses are typed; the real response has more. */
+/** Shape of a raw property row as returned by both /public/property/search and /public/property/searchfulltext -- confirmed by inspection of a live response. Only the fields this adapter actually uses are typed; the real response has more. Value fields are sometimes the literal string "N/A" rather than a number or null (confirmed live) -- toCents() below only accepts an actual number, so that case is treated the same as missing. */
 export interface RawPropertyRow {
   pid: number | string;
   pYear: number;
@@ -150,10 +155,10 @@ export interface RawPropertyRow {
   block: string | null;
   legalAcreage: number | null;
   effectiveSizeAcres: number | null;
-  marketValue: number | null;
-  appraisedValue: number | null;
-  landValue: number | null;
-  improvementValue: number | null;
+  marketValue: number | string | null;
+  appraisedValue: number | string | null;
+  landValue: number | string | null;
+  improvementValue: number | string | null;
   latitude: number | null;
   longitude: number | null;
   propType: string | null;
@@ -166,22 +171,35 @@ interface SearchFieldValue {
 
 let searchCallCount = 0;
 
-/** Total live search calls made this process -- exposed for cost/usage reporting, not enforcement (per-notice budgets are the caller's job). */
+/** Total real (non-cached) HTTP calls made this process, across every page of every search -- exposed for cost/usage reporting, not enforcement (the caller-supplied budget is what actually stops requests). */
 export function getSearchCallCount(): number {
   return searchCallCount;
 }
 
-const searchCache = new Map<string, RawPropertyRow[]>();
+/** One entry per (endpoint, query, page) -- so a repeated resolution attempt for the same term never re-fetches a page it already has, even across different search strategies that happen to land on the same query. */
+const pageCache = new Map<string, { rows: RawPropertyRow[]; totalCount: number | null }>();
 
-async function runSearch(path: string, body: Record<string, SearchFieldValue>, cacheKeyPrefix: string): Promise<RawPropertyRow[]> {
-  const cacheKey = `${cacheKeyPrefix}:${JSON.stringify(body)}`;
-  const cached = searchCache.get(cacheKey);
-  if (cached) return cached;
+interface PageResult {
+  rows: RawPropertyRow[];
+  totalCount: number | null;
+  /** True when this page could not be fetched because the shared request budget ran out (not because the CAD returned zero results) -- the pagination loop treats this as a hard stop, distinct from a legitimate empty page. */
+  budgetExhausted: boolean;
+}
+
+async function fetchPage(path: string, body: Record<string, SearchFieldValue>, cacheKeyPrefix: string, page: number, budget?: AppraisalRequestBudget): Promise<PageResult> {
+  const cacheKey = `${cacheKeyPrefix}:${JSON.stringify(body)}:page${page}`;
+  const cached = pageCache.get(cacheKey);
+  if (cached) return { ...cached, budgetExhausted: false };
+
+  if (budget && budget.remaining <= 0) {
+    return { rows: [], totalCount: null, budgetExhausted: true };
+  }
 
   const token = await getToken();
-  const results = await enqueue(async () => {
+  const result = await enqueue(async () => {
+    if (budget) budget.remaining -= 1;
     searchCallCount++;
-    const response = await rawFetch(`${path}?page=1&pageSize=20`, {
+    const response = await rawFetch(`${path}?page=${page}&pageSize=${PAGE_SIZE}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: token },
       body: JSON.stringify(body),
@@ -189,30 +207,66 @@ async function runSearch(path: string, body: Record<string, SearchFieldValue>, c
     if (response.status === 409 || response.status === 204) {
       // 409: "No search criteria specified" or a similar validation
       // rejection. 204: the API's own "zero matches" response -- confirmed
-      // live for an overly-specific full-text query (a whole raw legal-
-      // description sentence with punctuation). Neither is a hard failure,
-      // just no usable candidates.
-      return [];
+      // live for an overly-specific full-text query. Neither is a hard
+      // failure, just no usable candidates.
+      return { rows: [], totalCount: 0 };
     }
     if (!response.ok) throw new Error(`Hidalgo CAD search failed: HTTP ${response.status} for ${path}`);
     const bodyText = await response.text();
-    if (!bodyText) return [];
-    const parsed = JSON.parse(bodyText) as { results?: RawPropertyRow[] };
-    return parsed.results ?? [];
+    if (!bodyText) return { rows: [], totalCount: 0 };
+    const parsed = JSON.parse(bodyText) as {
+      results?: RawPropertyRow[];
+      totalProperty?: number | { propertyCount?: number };
+    };
+    const totalCount =
+      typeof parsed.totalProperty === "number" ? parsed.totalProperty : (parsed.totalProperty?.propertyCount ?? null);
+    return { rows: parsed.results ?? [], totalCount };
   });
 
-  searchCache.set(cacheKey, results);
-  return results;
+  pageCache.set(cacheKey, result);
+  return { ...result, budgetExhausted: false };
+}
+
+export interface PaginatedSearchOptions {
+  /** Caps how many pages this one search strategy will fetch, regardless of budget. Defaults to HIDALGO_CAD_MAX_PAGES_PER_SEARCH. Pass 1 for broad/last-resort strategies (e.g. owner name alone) where more pages only add noise, never a safer match. */
+  maxPages?: number;
+  /** Evaluated against the rows accumulated so far after each page; returning true stops pagination early once an adequately precise candidate has already appeared. Purely a recall/cost optimization -- never affects which candidates are returned to the caller or how they're scored. */
+  isGoodEnough?: (rowsSoFar: RawPropertyRow[]) => boolean;
+  /** Shared across every search strategy for one resolution attempt -- see resolver.ts's RequestBudget. Every real (non-cached) page fetch decrements it by 1; once exhausted, pagination (and further strategies) stop fetching rather than erroring. */
+  budget?: AppraisalRequestBudget;
+}
+
+/**
+ * Fetches page 1, then continues fetching subsequent pages only while all
+ * of the following hold: the page limit hasn't been reached, the budget
+ * hasn't run out, the last page was full (a short page means there's
+ * nothing more), the API's own total count (when present) hasn't been
+ * reached, and `isGoodEnough` (if given) hasn't already been satisfied by
+ * what's been collected so far. This is deliberately not "fetch every
+ * page" -- see HIDALGO_CAD_MAX_PAGES_PER_SEARCH.
+ */
+async function paginate(
+  pageFetcher: (page: number) => Promise<PageResult>,
+  options?: PaginatedSearchOptions,
+): Promise<RawPropertyRow[]> {
+  const maxPages = options?.maxPages ?? MAX_PAGES_PER_SEARCH;
+  const allRows: RawPropertyRow[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const { rows, totalCount, budgetExhausted } = await pageFetcher(page);
+    if (budgetExhausted) break;
+    allRows.push(...rows);
+    if (options?.isGoodEnough?.(allRows)) break;
+    if (rows.length < PAGE_SIZE) break;
+    if (totalCount != null && page * PAGE_SIZE >= totalCount) break;
+  }
+  return allRows;
 }
 
 /** Compound free-text search -- the only option for legal-description/subdivision terms, which have no dedicated structured field in this API. */
-export async function searchFullText(term: string): Promise<RawPropertyRow[]> {
+export async function searchFullText(term: string, options?: PaginatedSearchOptions): Promise<RawPropertyRow[]> {
   const year = await getCurrentYear();
-  return runSearch(
-    "/public/property/searchfulltext",
-    { pYear: { operator: "=", value: String(year) }, fullTextSearch: { operator: "match", value: term } },
-    "fulltext",
-  );
+  const body = { pYear: { operator: "=" as const, value: String(year) }, fullTextSearch: { operator: "match" as const, value: term } };
+  return paginate((page) => fetchPage("/public/property/searchfulltext", body, "fulltext", page, options?.budget), options);
 }
 
 export type StructuredSearchField = "pid" | "geoID" | "name" | "streetPrimary" | "ownerID";
@@ -222,13 +276,11 @@ export async function searchStructured(
   field: StructuredSearchField,
   value: string,
   operator: SearchFieldValue["operator"],
+  options?: PaginatedSearchOptions,
 ): Promise<RawPropertyRow[]> {
   const year = await getCurrentYear();
-  return runSearch(
-    "/public/property/search",
-    { pYear: { operator: "=", value: String(year) }, [field]: { operator, value } },
-    `structured:${field}`,
-  );
+  const body = { pYear: { operator: "=" as const, value: String(year) }, [field]: { operator, value } };
+  return paginate((page) => fetchPage("/public/property/search", body, `structured:${field}`, page, options?.budget), options);
 }
 
 export function mapRowToCandidate(row: RawPropertyRow): AppraisalPropertyCandidate {
@@ -265,7 +317,7 @@ export function mapRowToCandidate(row: RawPropertyRow): AppraisalPropertyCandida
   };
 }
 
-function toCents(value: number | null | undefined): number | null {
+function toCents(value: number | string | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) : null;
 }
 

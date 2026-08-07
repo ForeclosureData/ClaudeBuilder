@@ -28,6 +28,30 @@ describe("parseLegalDescriptionTokens", () => {
     const parsed = parseLegalDescriptionTokens("APN 178670 | G2500-00-001-0005-00");
     expect(parsed.propertyIdNumber).toBe("178670");
   });
+
+  // Hidalgo CAD's own legalDescription field is terse tax-roll shorthand
+  // that never uses any SUBDIVISION_RE classification word (SUBDIVISION,
+  // ADDITION, ESTATES, etc.) -- confirmed live against real records -- so
+  // the primary regex alone would leave `subdivision` null for almost
+  // every CAD candidate. These cover the "everything before LOT, with a
+  // trailing phase/unit/section qualifier stripped" fallback.
+  it("falls back to the text before LOT when no SUBDIVISION-style keyword is present (CAD shorthand with a phase qualifier)", () => {
+    expect(parseLegalDescriptionTokens("SOL BRILLA PH 1 LOT 1").subdivision).toBe("SOL BRILLA");
+    expect(parseLegalDescriptionTokens("DOS VALLES PH 2 LOT 68").subdivision).toBe("DOS VALLES");
+  });
+
+  it("falls back to the text before LOT when there is no phase/unit/section qualifier at all", () => {
+    expect(parseLegalDescriptionTokens("INDIAN HARBOR LOT 39").subdivision).toBe("INDIAN HARBOR");
+  });
+
+  it("strips a unit qualifier (not just phase) from the fallback subdivision", () => {
+    expect(parseLegalDescriptionTokens("LAS PALMAS DEL VALLE UT 2 LOT 28 BLK 1").subdivision).toBe("LAS PALMAS DEL VALLE");
+  });
+
+  it("prefers the SUBDIVISION-keyword match over the before-LOT fallback when both are present", () => {
+    const parsed = parseLegalDescriptionTokens("LOT 8, Block 2, PALM VALLEY ESTATES SUBDIVISION, an addition to Hidalgo County, Texas.");
+    expect(parsed.subdivision).toMatch(/PALM VALLEY ESTATES/i);
+  });
 });
 
 describe("tokensOverlap", () => {

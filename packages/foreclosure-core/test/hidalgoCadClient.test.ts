@@ -120,6 +120,55 @@ describe("hidalgoCadClient", () => {
     await expect(client.searchFullText("triggers a challenge")).rejects.toThrow(client.HidalgoCaptchaDetectedError);
   });
 
+  it("pages until a short (non-full) page signals there's nothing more", async () => {
+    const client = await freshClient();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const page1Rows = Array.from({ length: 20 }, (_, i) => ({ pid: i, pYear: 2027 }));
+    const page2Rows = Array.from({ length: 5 }, (_, i) => ({ pid: 100 + i, pYear: 2027 }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ user: { token: SAMPLE_TOKEN } }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({ results: { year: 2027 } }))
+      .mockResolvedValueOnce(jsonResponse({ results: page1Rows, totalProperty: { propertyCount: 25 } }))
+      .mockResolvedValueOnce(jsonResponse({ results: page2Rows, totalProperty: { propertyCount: 25 } }));
+
+    const rows = await client.searchFullText("a broad term");
+    expect(rows).toHaveLength(25);
+    // token + year + page1 + page2, no 3rd page attempted since page2 was short
+    expect(fetchMock.mock.calls.length).toBe(4);
+  });
+
+  it("stops paginating early once isGoodEnough is satisfied, without fetching further pages", async () => {
+    const client = await freshClient();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const page1Rows = Array.from({ length: 20 }, (_, i) => ({ pid: i, pYear: 2027, lot: i === 5 ? "68" : String(i) }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ user: { token: SAMPLE_TOKEN } }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({ results: { year: 2027 } }))
+      .mockResolvedValueOnce(jsonResponse({ results: page1Rows, totalProperty: { propertyCount: 100 } }));
+
+    const rows = await client.searchFullText("a broad term", { isGoodEnough: (soFar) => soFar.some((r) => r.lot === "68") });
+    expect(rows).toHaveLength(20);
+    // Would otherwise keep paging (totalProperty says 100 available) -- only page 1 was fetched.
+    expect(fetchMock.mock.calls.length).toBe(3);
+  });
+
+  it("stops paginating when the shared request budget runs out, without erroring", async () => {
+    const client = await freshClient();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const page1Rows = Array.from({ length: 20 }, (_, i) => ({ pid: i, pYear: 2027 }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ user: { token: SAMPLE_TOKEN } }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({ results: { year: 2027 } }))
+      .mockResolvedValueOnce(jsonResponse({ results: page1Rows, totalProperty: { propertyCount: 100 } }));
+
+    const budget = { remaining: 1 };
+    const rows = await client.searchFullText("a broad term", { budget });
+    expect(rows).toHaveLength(20);
+    expect(budget.remaining).toBe(0);
+    // Only page 1 was fetched -- budget ran out before page 2.
+    expect(fetchMock.mock.calls.length).toBe(3);
+  });
+
   it("caches identical queries in-process instead of re-fetching", async () => {
     const client = await freshClient();
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;

@@ -4,8 +4,10 @@ import type {
   AppraisalPropertyCandidate,
   AppraisalPropertyRecord,
   AppraisalSourceAccessMetadata,
+  AppraisalRequestBudget,
 } from "@foreclosuredata/types";
 import { searchFullText, searchStructured, mapRowToCandidate, type RawPropertyRow } from "./hidalgoCadClient";
+import { parseLegalDescriptionTokens, normalizeToken } from "./legalDescriptionParsing";
 
 export type {
   CountyAppraisalAdapter,
@@ -82,11 +84,28 @@ export class MockCountyAppraisalAdapter implements CountyAppraisalAdapter {
  * requires no login, CAPTCHA, or payment before this was implemented.
  *
  * The API has no combined-field query (e.g. "owner name AND subdivision"
- * in one request): for the two combined resolver strategies (owner+
- * subdivision, owner+acreage), the more selective field drives the one
- * live search call and the other field is applied as a client-side
- * filter on the results, so each resolver strategy still costs exactly
- * one request.
+ * in one request): for the combined resolver strategies (owner+
+ * subdivision, owner+acreage), the more selective field drives the live
+ * search call(s) and the other field is applied as a client-side filter
+ * on the results.
+ *
+ * Search priority within one query object (confirmed live, see the
+ * "Priority 1-3" doc comments below for what changed and why):
+ *   1. Parcel ID / GEO ID -- literal identifiers, strongest when present.
+ *   2. Street address -- confirmed live to be highly selective (usually
+ *      0 or 1 result), so an already-resolved case's enrichment lookup
+ *      tries this before any broader subdivision/owner sweep.
+ *   3. Subdivision (+ lot/block when known) -- paginated, stops early
+ *      once the exact lot appears (see hidalgoCadClient's isGoodEnough).
+ *   4. Legal description full text.
+ *   5. Owner name -- tries the complete stated name as one full-text
+ *      query first (confirmed live: an AND-of-tokens match, so a full
+ *      "First Surname1 Surname2" query is dramatically more selective
+ *      than a single-surname structured search -- e.g. a bare surname
+ *      structured search returned 40 unrelated results where the full
+ *      name returned exactly 1). Only falls back to the broad single-
+ *      surname structured search, capped to one page, if that precise
+ *      attempt finds nothing -- this is the deliberate "last resort."
  */
 export class HidalgoCountyAppraisalAdapter implements CountyAppraisalAdapter {
   countyCode = "hidalgo-tx";
@@ -110,44 +129,70 @@ export class HidalgoCountyAppraisalAdapter implements CountyAppraisalAdapter {
     officialApiAvailable: true,
   };
 
-  async searchProperties(query: AppraisalPropertySearchQuery): Promise<AppraisalPropertyCandidate[]> {
+  async searchProperties(query: AppraisalPropertySearchQuery, budget?: AppraisalRequestBudget): Promise<AppraisalPropertyCandidate[]> {
     if (query.parcelId) {
-      return (await searchStructured("pid", query.parcelId, "=")).map(mapRowToCandidate);
+      return (await searchStructured("pid", query.parcelId, "=", { budget, maxPages: 1 })).map(mapRowToCandidate);
     }
     if (query.geographicId) {
-      return (await searchStructured("geoID", query.geographicId, "begins")).map(mapRowToCandidate);
+      return (await searchStructured("geoID", query.geographicId, "begins", { budget })).map(mapRowToCandidate);
+    }
+
+    // Priority 3: verify/enrich an already-resolved case against its exact
+    // notice-stated address before trying anything broader.
+    if (query.streetAddress) {
+      const term = extractStreetSearchTerm(query.streetAddress);
+      return (await searchStructured("streetPrimary", term, "mlike", { budget })).map(mapRowToCandidate);
     }
 
     if (query.ownerNames?.length && query.subdivision) {
-      const rows = await searchFullText(subdivisionSearchTerm(query.subdivision));
+      const term = subdivisionSearchTerm(query.subdivision);
+      const isGoodEnough = query.lot ? goodEnoughOnLot(query.lot, query.block) : undefined;
+      const rows = await searchFullText(term, { budget, isGoodEnough });
       const surname = extractSurname(query.ownerNames[0]!);
       return rows.filter((r) => matchesOwnerSurname(r, surname)).map(mapRowToCandidate);
     }
     if (query.ownerNames?.length && query.acreage != null) {
       const surname = extractSurname(query.ownerNames[0]!);
-      const rows = await searchStructured("name", surname, "begins");
+      const rows = await searchStructured("name", surname, "begins", { budget, maxPages: 1 });
       return rows.filter((r) => acreageCloseEnough(r, query.acreage!)).map(mapRowToCandidate);
     }
 
+    // Priority 1 + Priority 4: paginated subdivision search, narrowed to
+    // the exact lot (+block) when the notice gives one and the CAD
+    // returns it -- otherwise the full subdivision set is returned
+    // unfiltered so scoring.ts can still see (and flag) a conflicting lot.
     if (query.subdivision) {
-      return (await searchFullText(subdivisionSearchTerm(query.subdivision))).map(mapRowToCandidate);
+      const term = subdivisionSearchTerm(query.subdivision);
+      const isGoodEnough = query.lot ? goodEnoughOnLot(query.lot, query.block) : undefined;
+      const rows = await searchFullText(term, { budget, isGoodEnough });
+      if (query.lot) {
+        const narrowed = rows.filter((r) => rowMatchesLotBlock(r, query.lot!, query.block));
+        if (narrowed.length > 0) return narrowed.map(mapRowToCandidate);
+      }
+      return rows.map(mapRowToCandidate);
     }
     if (query.legalDescription) {
-      return (await searchFullText(query.legalDescription)).map(mapRowToCandidate);
+      return (await searchFullText(query.legalDescription, { budget })).map(mapRowToCandidate);
     }
     if (query.ownerNames?.length) {
+      // Precise attempt first: the complete stated name as one full-text
+      // query (see the class doc comment -- an AND-of-tokens match, far
+      // more selective than a bare surname). Only if that finds nothing
+      // does this fall back to the broad, single-page surname sweep.
+      const fullNameTerm = query.ownerNames[0]!.trim();
+      const preciseRows = fullNameTerm ? await searchFullText(fullNameTerm, { budget, maxPages: 1 }) : [];
+      if (preciseRows.length > 0) {
+        return preciseRows.map(mapRowToCandidate);
+      }
       const surname = extractSurname(query.ownerNames[0]!);
-      return (await searchStructured("name", surname, "begins")).map(mapRowToCandidate);
-    }
-    if (query.streetAddress) {
-      return (await searchStructured("streetPrimary", query.streetAddress, "mlike")).map(mapRowToCandidate);
+      return (await searchStructured("name", surname, "begins", { budget, maxPages: 1 })).map(mapRowToCandidate);
     }
 
     return [];
   }
 
   async getPropertyDetails(sourcePropertyId: string): Promise<AppraisalPropertyRecord> {
-    const rows = await searchStructured("pid", sourcePropertyId, "=");
+    const rows = await searchStructured("pid", sourcePropertyId, "=", { maxPages: 1 });
     const match = rows.find((r) => String(r.pid) === sourcePropertyId) ?? rows[0];
     if (!match) throw new Error(`No Hidalgo CAD property found for pid "${sourcePropertyId}"`);
     return mapRowToCandidate(match);
@@ -161,8 +206,9 @@ export class HidalgoCountyAppraisalAdapter implements CountyAppraisalAdapter {
       notes:
         "Live public ProdigyCAD API (hidalgo.prodigycad.com), the same portal ordinary members of the " +
         "public use. Confirmed to require no login/CAPTCHA/payment for property search. Rate-limited: " +
-        "single request in flight, HIDALGO_CAD_REQUEST_DELAY_MS between requests, and a per-notice " +
-        "request budget enforced by the resolver — see resolver.ts's RequestBudget.",
+        "single request in flight, HIDALGO_CAD_REQUEST_DELAY_MS between requests, controlled pagination " +
+        "(HIDALGO_CAD_MAX_PAGES_PER_SEARCH/HIDALGO_CAD_PAGE_SIZE), and a per-notice request budget " +
+        "(HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE) enforced by the resolver — see resolver.ts's RequestBudget.",
     };
   }
 }
@@ -183,6 +229,44 @@ function subdivisionSearchTerm(subdivision: string): string {
   return subdivision.replace(SUBDIVISION_SUFFIX_RE, "").trim() || subdivision;
 }
 
+/**
+ * Cuts a full notice-stated address down to just its street portion (house
+ * number + street name) before using it as a streetPrimary query, and
+ * strips a leading directional prefix off the house number.
+ *
+ * Cuts right after the *last* recognized street-suffix word (AVE, DR, ST,
+ * etc.) rather than trying to strip a "city, state zip" tail -- a first
+ * attempt at the latter (matching city/state/zip directly) was confirmed
+ * live to badly over-strip: with only one comma before the state (a
+ * common real format, e.g. "700 W La Quinta Dr Pharr, Texas 78577") or no
+ * comma at all ("1416 W McKinley Ave Alton. Texas 78573"), a plain
+ * "[A-Za-z ]* Texas zip" pattern happily consumes the *entire* street
+ * name too (nothing in the regex stops it at the city boundary), leaving
+ * just the house number and turning a precise 1-result query into a
+ * near-useless 100+-result one. Cutting after the last street-suffix word
+ * doesn't have that failure mode, since a suffix word essentially never
+ * appears elsewhere in a Texas street address.
+ *
+ * The directional-prefix strip is separate: CAD's streetPrimary field is
+ * inconsistent about carrying it (e.g. "1416 MCKINLEY AVE" with no "W",
+ * even though the notice and even other records in the same subdivision
+ * do include it) -- keeping "W" in the query returned zero results where
+ * dropping it returned the exact single match every time it was tried.
+ */
+const STREET_SUFFIX_RE = /\b(?:ST|AVE|AV|DR|RD|LN|BLVD|CIR|CT|WAY|PL|TRL|LOOP|PKWY|HWY|EXPY|FWY)\b\.?/gi;
+const CITY_STATE_ZIP_SUFFIX_RE = /,?\s*[A-Za-z][A-Za-z .'\-]*[.,]?\s+(?:Texas|TX)\s+\d{5}\s*$/i;
+const DIRECTIONAL_PREFIX_RE = /^(\d+)\s+(?:N|S|E|W|NE|NW|SE|SW)\.?\s+(.+)$/i;
+export function extractStreetSearchTerm(fullAddress: string): string {
+  const suffixMatches = [...fullAddress.matchAll(STREET_SUFFIX_RE)];
+  const lastSuffix = suffixMatches[suffixMatches.length - 1];
+  const streetOnly =
+    lastSuffix && lastSuffix.index !== undefined
+      ? fullAddress.slice(0, lastSuffix.index + lastSuffix[0].length).trim()
+      : fullAddress.replace(CITY_STATE_ZIP_SUFFIX_RE, "").trim().replace(/,$/, "");
+  const directional = streetOnly.match(DIRECTIONAL_PREFIX_RE);
+  return directional ? `${directional[1]} ${directional[2]}` : streetOnly;
+}
+
 /** Last word of a name, uppercased -- ProdigyCAD's structured "name" field search uses a "begins" match, and its displayName format puts the surname first, so a surname-only query is the most reliable single term to search on. */
 function extractSurname(fullName: string): string {
   const parts = fullName.trim().split(/\s+/).filter(Boolean);
@@ -196,6 +280,25 @@ function matchesOwnerSurname(row: RawPropertyRow, surnameUpper: string): boolean
 function acreageCloseEnough(row: RawPropertyRow, targetAcreage: number): boolean {
   const rowAcreage = row.legalAcreage ?? row.effectiveSizeAcres;
   return rowAcreage != null && Math.abs(rowAcreage - targetAcreage) < 0.05;
+}
+
+/** A row's lot/block, falling back to parsing them out of its legalDescription text when the API's own dedicated lot/block fields are null (observed live: sometimes populated, sometimes not, for the same subdivision). */
+function rowLotBlock(row: RawPropertyRow): { lot: string | null; block: string | null } {
+  if (row.lot || row.block) return { lot: row.lot, block: row.block };
+  const tokens = row.legalDescription ? parseLegalDescriptionTokens(row.legalDescription) : null;
+  return { lot: tokens?.lot ?? null, block: tokens?.block ?? null };
+}
+
+function rowMatchesLotBlock(row: RawPropertyRow, lot: string, block?: string): boolean {
+  const { lot: rowLot, block: rowBlock } = rowLotBlock(row);
+  if (!rowLot || normalizeToken(rowLot) !== normalizeToken(lot)) return false;
+  if (block && rowBlock && normalizeToken(rowBlock) !== normalizeToken(block)) return false;
+  return true;
+}
+
+/** Pagination early-stop: once the accumulated rows already contain the exact lot (+block, if known), fetching further pages of the same subdivision search buys nothing -- pure recall/cost optimization, never changes which candidates are returned. */
+function goodEnoughOnLot(lot: string, block?: string) {
+  return (rows: RawPropertyRow[]) => rows.some((r) => rowMatchesLotBlock(r, lot, block));
 }
 
 function normalize(value: string | null | undefined): string {

@@ -338,7 +338,7 @@ async function processSingleNotice(params: {
     city: null,
   };
 
-  const cadBudget: RequestBudget = { remaining: Number(process.env.HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE ?? 5) };
+  const cadBudget: RequestBudget = { remaining: Number(process.env.HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE ?? 10) };
   const resolution = await resolvePropertyAddress(resolutionInput, params.appraisalAdapter, undefined, cadBudget);
 
   const grantorName = (extracted.grantorNames.value ?? extracted.borrowerNames.value ?? []).join(", ") || "Unknown owner";
