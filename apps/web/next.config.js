@@ -11,11 +11,13 @@ const nextConfig = {
     "@foreclosuredata/validation",
   ],
   experimental: {
-    // @napi-rs/canvas ships a native .node binary and pdfjs-dist ships a
-    // .wasm file (both used only by the Hidalgo PDF-splitting adapter) --
-    // webpack can't parse either as a JS module, so they must be excluded
-    // from bundling the same way Prisma's native engine is below.
-    serverComponentsExternalPackages: ["@prisma/client", "prisma", "@napi-rs/canvas", "pdfjs-dist", "pdf-lib"],
+    // mupdf ships a single WASM blob (10MB) that webpack can't parse as a
+    // JS module and shouldn't try to bundle — exclude it the same way
+    // Prisma's native query engine is below. (Replaces an earlier
+    // pdfjs-dist + @napi-rs/canvas rendering path that rendered correctly
+    // in local testing but produced blank pages in the actual deployed
+    // Lambda — see pdfRender.ts.)
+    serverComponentsExternalPackages: ["@prisma/client", "prisma", "mupdf", "pdf-lib"],
     // Next's serverless output tracing can't discover Prisma's native
     // query-engine binaries via static import analysis alone, so they must
     // be listed explicitly or Netlify's function bundle ends up missing
@@ -26,29 +28,14 @@ const nextConfig = {
     // Two patterns cover both a hoisted pnpm layout (node_modules/.prisma/
     // client) and pnpm's default nested virtual store (node_modules/.pnpm/
     // @prisma+client@<version>/node_modules/.prisma/client) -- which layout
-    // actually applies varies by build environment. The same applies to
-    // @napi-rs/canvas's platform-specific native binary is only reachable
-    // via a runtime import, which static tracing can't follow. pdfjs-dist's
-    // wasm/ assets are NOT traced from node_modules at all (that path
-    // guessing proved unreliable across pnpm layouts — see pdfRender.ts);
-    // they're vendored into county-adapters' own source tree instead, so
-    // this only needs to trace that one stable, monorepo-relative path.
+    // actually applies varies by build environment. mupdf's dist/ folder
+    // (its wasm blob + loader) is traced the same way for the same reason.
     outputFileTracingIncludes: {
       "/**": [
         "../../node_modules/.prisma/client/libquery_engine-*.so.node",
         "../../node_modules/.pnpm/@prisma+client@*/node_modules/.prisma/client/libquery_engine-*.so.node",
-        "../../node_modules/@napi-rs/canvas-linux-x64-gnu/*.node",
-        "../../node_modules/.pnpm/@napi-rs+canvas-linux-x64-gnu@*/node_modules/@napi-rs/canvas-linux-x64-gnu/*.node",
-        "../../packages/county-adapters/src/hidalgo/vendor/pdfjs-wasm/*",
-        // pdfjs-dist is marked external above so webpack won't bundle it,
-        // but that means Node needs the real package files present at
-        // runtime — Next's automatic tracing for "external" packages
-        // turned out not to include pdf.worker.mjs (needed for its
-        // in-process "fake worker" fallback), so the whole package is
-        // swept in explicitly rather than guessing which specific files
-        // it dynamically loads.
-        "../../node_modules/pdfjs-dist/legacy/build/*",
-        "../../node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/legacy/build/*",
+        "../../node_modules/mupdf/dist/*",
+        "../../node_modules/.pnpm/mupdf@*/node_modules/mupdf/dist/*",
       ],
     },
   },
