@@ -36,9 +36,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ skipped: true, reason: "HIDALGO_LIVE_INGESTION_ENABLED is not \"true\"" });
   }
 
-  const summary = await ingestForeclosureNotices("hidalgo-tx", hidalgoAdapter, {
-    maxBundles: body.maxBundles,
-    maxNoticesPerBundle: body.maxNoticesPerBundle,
-  });
-  return NextResponse.json(summary);
+  try {
+    const summary = await ingestForeclosureNotices("hidalgo-tx", hidalgoAdapter, {
+      maxBundles: body.maxBundles,
+      maxNoticesPerBundle: body.maxNoticesPerBundle,
+    });
+    return NextResponse.json(summary);
+  } catch (err) {
+    // Surfaced in the response body (rather than left to swallow into a
+    // bare platform 500) so a supervised test run can be diagnosed without
+    // needing separate log access.
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined },
+      { status: 500 },
+    );
+  }
 }
