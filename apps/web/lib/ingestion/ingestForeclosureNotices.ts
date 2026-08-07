@@ -160,7 +160,16 @@ export async function ingestForeclosureNotices(
 
     let splitNotices;
     try {
-      splitNotices = await adapter.splitBundle(downloaded);
+      // maxNotices is enforced INSIDE splitBundle (it stops issuing further
+      // AI calls once it's hit), not by slicing the result afterward —
+      // slicing after the fact would still have paid for every notice in
+      // the bundle before throwing most of them away.
+      splitNotices = await adapter.splitBundle(downloaded, {
+        maxNotices: options.maxNoticesPerBundle,
+        onCost: (costCents) => {
+          summary.aiCostCents += costCents;
+        },
+      });
     } catch (err) {
       summary.bundlesFailed++;
       summary.errors.push(`splitBundle(${notice.externalId}) failed: ${errMessage(err)}`);
@@ -171,7 +180,7 @@ export async function ingestForeclosureNotices(
       continue;
     }
 
-    const bounded = options.maxNoticesPerBundle ? splitNotices.slice(0, options.maxNoticesPerBundle) : splitNotices;
+    const bounded = splitNotices;
     summary.noticesSplit += bounded.length;
     summary.bundlesProcessed++;
 

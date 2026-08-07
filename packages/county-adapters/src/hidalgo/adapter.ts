@@ -1,4 +1,4 @@
-import type { BundledNotice, CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice } from "../types";
+import type { BundledNotice, CountyForeclosureAdapter, DiscoveredNotice, DownloadedNotice, SplitBundleOptions } from "../types";
 import { discoverPropertySalePostings, HIDALGO_USER_AGENT } from "./sitemap";
 import { splitHidalgoBundle } from "./splitBundle";
 import { extractPageRangeAsPdf } from "./pdfSplit";
@@ -55,8 +55,11 @@ export const hidalgoAdapter: CountyForeclosureAdapter = {
     };
   },
 
-  async splitBundle(downloaded: DownloadedNotice): Promise<BundledNotice[]> {
-    const result = await splitHidalgoBundle(downloaded.fileBuffer);
+  async splitBundle(downloaded: DownloadedNotice, options?: SplitBundleOptions): Promise<BundledNotice[]> {
+    const result = await splitHidalgoBundle(downloaded.fileBuffer, {
+      maxNotices: options?.maxNotices,
+      onCost: options?.onCost,
+    });
 
     const bundled: BundledNotice[] = [];
     for (const notice of result.notices) {

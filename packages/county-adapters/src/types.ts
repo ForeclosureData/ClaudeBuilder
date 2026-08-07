@@ -44,7 +44,14 @@ export interface CountyForeclosureAdapter {
    * directory — the worker/ingestion pipeline only knows "call this if it
    * exists, then treat each result as its own notice."
    */
-  splitBundle?(downloaded: DownloadedNotice): Promise<BundledNotice[]>;
+  splitBundle?(downloaded: DownloadedNotice, options?: SplitBundleOptions): Promise<BundledNotice[]>;
+}
+
+export interface SplitBundleOptions {
+  /** Stop after producing this many notices — a hard cap for bounded/supervised test runs. Unbounded when omitted. */
+  maxNotices?: number;
+  /** Called after each unit of AI spend (in cents), if the adapter's splitting uses AI — lets the caller track/cap real cost as it runs. */
+  onCost?: (costCents: number) => void;
 }
 
 export interface BundledNotice {
