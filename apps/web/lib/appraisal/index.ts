@@ -16,7 +16,8 @@ export function getCountyAppraisalAdapter(countySlug: string): CountyAppraisalAd
   const cached = cache.get(key);
   if (cached) return cached;
 
-  const adapter: CountyAppraisalAdapter = key === "hidalgo" ? new HidalgoCountyAppraisalAdapter() : new MockCountyAppraisalAdapter([]);
+  // County.slug in the database is "hidalgo-tx" (see seed.ts), not "hidalgo".
+  const adapter: CountyAppraisalAdapter = key === "hidalgo-tx" ? new HidalgoCountyAppraisalAdapter() : new MockCountyAppraisalAdapter([]);
   cache.set(key, adapter);
   return adapter;
 }

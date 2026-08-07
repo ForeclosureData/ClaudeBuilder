@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ skipped: true, reason: "HIDALGO_LIVE_INGESTION_ENABLED is not \"true\"" });
   }
 
-  const summary = await ingestForeclosureNotices("hidalgo", hidalgoAdapter, {
+  const summary = await ingestForeclosureNotices("hidalgo-tx", hidalgoAdapter, {
     maxBundles: body.maxBundles,
     maxNoticesPerBundle: body.maxNoticesPerBundle,
   });

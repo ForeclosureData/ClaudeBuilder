@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   const maxBundles = typeof body.maxBundles === "number" ? body.maxBundles : 1;
   const maxNoticesPerBundle = typeof body.maxNoticesPerBundle === "number" ? body.maxNoticesPerBundle : 5;
 
-  const summary = await ingestForeclosureNotices("hidalgo", hidalgoAdapter, { maxBundles, maxNoticesPerBundle });
+  const summary = await ingestForeclosureNotices("hidalgo-tx", hidalgoAdapter, { maxBundles, maxNoticesPerBundle });
 
   return NextResponse.json(summary);
 }
