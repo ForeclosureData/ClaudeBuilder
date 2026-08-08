@@ -604,20 +604,27 @@ async function processSingleNotice(params: {
         isSelected: c.sourcePropertyId === selectedCandidate?.sourcePropertyId,
       })),
     });
-    await prisma.propertyResolutionAttempt.create({
-      data: {
-        foreclosureCaseId: fc.id,
-        resolutionMethod: resolution.address.addressResolutionMethod as never,
-        confidence: resolution.resolution.confidence,
-        explanation: resolution.resolution.explanation,
-        matchedFields: resolution.resolution.matchedFields,
-        conflictingFields: resolution.resolution.conflictingFields,
-        candidateCount: resolution.resolution.candidateCount,
-        requiresManualReview: resolution.resolution.requiresManualReview,
-        selectedCandidateId: resolution.resolution.selectedCandidateId,
-      },
-    });
   }
+  // Always recorded, even when the CAD search returned zero candidates --
+  // that outcome (every search strategy came back empty) is itself a
+  // distinct, important failure mode for reviewers/reporting to see, not
+  // something to leave with no audit trail. Previously nested inside the
+  // block above, so a "no candidates at all" case silently persisted
+  // nothing here, which meant it also couldn't be told apart from "the
+  // resolution step never ran" when auditing later.
+  await prisma.propertyResolutionAttempt.create({
+    data: {
+      foreclosureCaseId: fc.id,
+      resolutionMethod: resolution.address.addressResolutionMethod as never,
+      confidence: resolution.resolution.confidence,
+      explanation: resolution.resolution.explanation,
+      matchedFields: resolution.resolution.matchedFields,
+      conflictingFields: resolution.resolution.conflictingFields,
+      candidateCount: resolution.resolution.candidateCount,
+      requiresManualReview: resolution.resolution.requiresManualReview,
+      selectedCandidateId: resolution.resolution.selectedCandidateId,
+    },
+  });
 
   // Annual county values for the selected property -- only years the CAD
   // actually returned populated data for (see getValuationHistory's
