@@ -61,6 +61,62 @@ describe("detectStatedPropertyAddress", () => {
   it("returns null when no address-shaped text is present", () => {
     expect(detectStatedPropertyAddress("Lot 22, Palms Estates, Hidalgo County")).toBeNull();
   });
+
+  // Regression coverage for a real production bug: the bare (unlabeled)
+  // fallback matched the FIRST address-shaped string anywhere in the
+  // document with no anchor, and several real Hidalgo templates state the
+  // county courthouse's auction address (or a trustee's/attorney's mailing
+  // address) *before* any real property reference -- confirmed live to have
+  // published the courthouse address as the property's own address on 5 of
+  // 24 real records. None of these fixtures state a real property address
+  // anywhere, so the correct result is null (falls through to
+  // legal-description-based CAD resolution), not a wrong address.
+  it("never returns the Hidalgo County Administrative Building's auction address", () => {
+    const text = `Location of Sale: The place of the sale shall be: HIDALGO County Courthouse, Texas at the following
+      location: The Hidalgo County Administrative Building, located at 2802 S. Business Hwy 281, Edinburg, TX 78539
+      (outdoor covered area on the west side of the building).`;
+    expect(detectStatedPropertyAddress(text)).toBeNull();
+  });
+
+  it("tolerates OCR noise in the courthouse address ('5.' or '§.' for 'S.')", () => {
+    expect(detectStatedPropertyAddress("2802 5. BUSINESS HWY 281. EDINBURG, TX 78539")).toBeNull();
+    expect(detectStatedPropertyAddress("2802 §. BUSINESS HWY 281, EDINBURG, TX 78539")).toBeNull();
+  });
+
+  it("never returns a substitute trustee's mailing address ('appointed X, located at Y')", () => {
+    const text = `the undersigned attorney for the mortgage servicer has named and appointed, and by these presents
+      does name and appoint Example Title Services, LLC, located at 5177 Example Avenue Suite 1230, Houston, TX 77056,
+      Substitute Trustee to act under and by virtue of said Deed of Trust.`;
+    expect(detectStatedPropertyAddress(text)).toBeNull();
+  });
+
+  it("never returns an attorney signature block's office address", () => {
+    const text = `Jane Doe, Attorney at Law
+      Example Office Center, Suite 300
+      14160 Example Parkway
+      Dallas, TX 73254`;
+    expect(detectStatedPropertyAddress(text)).toBeNull();
+  });
+
+  it("still finds a real property address stated earlier in the same document that also contains a trustee address later", () => {
+    const text = `Property Address: 123 Real St, Edinburg, TX 78539\n\nlater in the document: Example Trustee Co, located at 999 Other Ave, Houston, TX 77056.`;
+    const result = detectStatedPropertyAddress(text);
+    expect(result?.text).toContain("123 Real St");
+  });
+
+  it("does not let a document-number header ('Doc-117660') masquerade as a house number", () => {
+    const text = "Doc-117660\n309 S Paseo Del Rey St 00000010828390\nMission, TX 78572";
+    const result = detectStatedPropertyAddress(text);
+    expect(result?.text).toContain("309 S Paseo Del Rey St");
+    expect(result?.text).not.toContain("117660");
+  });
+
+  it("does not start a house number mid-way through a longer tracking/ID digit run", () => {
+    const text = "Certificate of Posting: 260000404531 7 3113 HST Mcallen, TX 78503";
+    const result = detectStatedPropertyAddress(text);
+    // Either null (correctly rejected as unreliable) or, if matched, never starting with the barcode's tail digits.
+    if (result) expect(result.text.startsWith("404531")).toBe(false);
+  });
 });
 
 describe("parseLegalDescription", () => {
