@@ -21,7 +21,15 @@ export function parseLegalDescription(noticeText: string): ParsedLegalDescriptio
   const rawText = labeled ? labeled[1]!.replace(/\s+/g, " ").trim() : findLotBlockSentence(noticeText);
   if (!rawText) return null;
 
-  const lot = rawText.match(/Lot\s+([A-Za-z0-9\-]+)/i)?.[1] ?? null;
+  // A spelled-out lot number ("Lot Twenty-Eight (28)") is routinely followed
+  // by its own digit form in parentheses -- prefer that digit when present
+  // rather than storing only the word form, since the CAD's own lot field
+  // is always numeric and a bare word-vs-digit mismatch ("TWENTY-EIGHT" vs
+  // "28") was confirmed causing real candidates to be rejected as a false
+  // lot conflict even though every other field (address, owner, subdivision)
+  // matched. Falls back to the word form when there's no parenthetical.
+  const lotMatch = rawText.match(/Lot\s+([A-Za-z0-9\-]+)(?:\s*\(([0-9]+)\))?/i);
+  const lot = lotMatch ? (lotMatch[2] ?? lotMatch[1]!) : null;
   const block = rawText.match(/Block\s+([A-Za-z0-9\-]+)/i)?.[1] ?? null;
   const subdivision = extractSubdivisionName(rawText);
   const acreageMatch = rawText.match(/([\d.]+)\s*acres?/i);

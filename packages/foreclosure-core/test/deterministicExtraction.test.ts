@@ -156,6 +156,24 @@ describe("parseLegalDescription", () => {
     const result = parseLegalDescription("LOT FIVE (5), TANGLEWOOD AT BENTSEN PALM PHASE I, AN ADDITION");
     expect(result?.subdivision).toBe("TANGLEWOOD AT BENTSEN PALM PHASE I");
   });
+
+  // Real Hidalgo cases: "Lot Twenty-Eight (28)" and "LOT FIVE (5)" were both
+  // stored with only the word form ("TWENTY-EIGHT", "FIVE"), which never
+  // equals the CAD's own numeric lot field ("28", "5") -- confirmed this
+  // caused an otherwise-exact address+owner+subdivision match to be
+  // rejected as a false lot conflict. Prefer the parenthetical digit when
+  // the notice states one, since it's the same number in the CAD's format.
+  it("prefers the parenthetical digit over a spelled-out lot number", () => {
+    const result = parseLegalDescription(
+      "Legal Description: Lot Twenty-Eight (28), Block One (1), LAS PALMAS DEL VALLE SUBDIVISION UNIT NO. 2, an addition to Hidalgo County, Texas.\n\nOriginal Principal Amount: $1",
+    );
+    expect(result?.lot).toBe("28");
+  });
+
+  it("still returns the word form when no parenthetical digit is present", () => {
+    const result = parseLegalDescription("Legal Description: Lot Twenty-Eight, PALM VALLEY ESTATES SUBDIVISION.\n\nOriginal Principal Amount: $1");
+    expect(result?.lot).toBe("Twenty-Eight");
+  });
 });
 
 describe("extractDeterministic (full notice)", () => {
