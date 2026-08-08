@@ -125,15 +125,28 @@ export async function GET(request: Request) {
     const danglingReviewTaskDocRefs = reviewTasksWithRefs.filter((t) => t.sourceDocumentId && !existingDocsForReview.some((d) => d.id === t.sourceDocumentId));
 
     // ── 3. DB-level re-confirmation of the composite unique constraint ──
+    // Prisma's `db push` implements `@@unique` as a bare CREATE UNIQUE INDEX,
+    // not an ALTER TABLE ADD CONSTRAINT, so it never appears in pg_constraint.
+    // Check pg_indexes (the actual enforcement mechanism) instead.
     const uniqueConstraints = await prisma.$queryRawUnsafe<{ conname: string; definition: string }[]>(
       `SELECT c.conname, pg_get_constraintdef(c.oid) AS definition
        FROM pg_constraint c
        JOIN pg_class t ON t.oid = c.conrelid
        WHERE t.relname = 'foreclosure_cases' AND c.contype = 'u'`,
     );
-    const hasCountyFilingNumberConstraint = uniqueConstraints.some(
-      (c) => c.definition.includes("county_id") && c.definition.includes("county_filing_number"),
+    const uniqueIndexes = await prisma.$queryRawUnsafe<{ indexname: string; indexdef: string }[]>(
+      `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'foreclosure_cases'`,
     );
+    const hasCountyFilingNumberConstraint =
+      uniqueConstraints.some(
+        (c) => c.definition.includes("county_id") && c.definition.includes("county_filing_number"),
+      ) ||
+      uniqueIndexes.some(
+        (i) =>
+          i.indexdef.toUpperCase().includes("UNIQUE") &&
+          i.indexdef.includes("county_id") &&
+          i.indexdef.includes("county_filing_number"),
+      );
 
     const integrity = {
       foreclosureCaseCountIs82: foreclosureCaseCount === 82,
@@ -173,6 +186,7 @@ export async function GET(request: Request) {
       danglingReviewTaskDocRefs,
       ingestedNoticeBundles: ingestedBundles,
       dbLevelUniqueConstraints: uniqueConstraints,
+      dbLevelUniqueIndexes: uniqueIndexes,
       integrity,
       allChecksPassed,
     });
