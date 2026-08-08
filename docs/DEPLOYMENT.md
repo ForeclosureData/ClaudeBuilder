@@ -429,6 +429,152 @@ Run the 10-record subset before the full 82. Reasoning:
   click, identical to how live-ingested notices are reviewed today.
 - Any change to ingestion, scheduling, or new-county work.
 
+## 10-case regeneration pilot — results (2026-08-08)
+
+Executed the plan above against exactly 10 pre-documented cases, per
+explicit approval. Script: `apps/web/scripts/pilot-regenerate-10.mts`;
+workflow: `.github/workflows/hidalgo-regeneration-pilot.yml`; GitHub
+Actions run
+[31282853166](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31282853166)
+(success, 80s pilot step, 10-case hard cap enforced by the script's
+hard-coded ID list, not an input).
+
+### The 10 cases (selected and documented before the run)
+
+4 existing-address / 6 unresolved (roughly proportional to the 46/36
+population split), deliberately including messy legal descriptions, an
+owner-name-unusable case, a recurring subdivision name, and the same
+subdivision (Buchanan Estates) as the 117661 case repaired earlier this
+session — not cherry-picked toward easy cases.
+
+| Filing # | Type | Address / Legal |
+|---|---|---|
+| HID-117911 | Existing address | 410 Chula Vista Drive, Chula Vista Estates Phase I Lot 126 |
+| HID-117957 | Existing address | 2318 Flushing Meadows, Hidden Valley Subdivision Phase 1 Lot 3 Block 3 |
+| HID-118234 | Existing address | 3401 N Whisky Dr, Buchanan Estates Lot 26 (same subdivision as 117661) |
+| HID-118198 | Existing address | 705 N Inspiration Blvd, messy fractional-acreage legal description, owner unrecoverable |
+| HID-117925 | NO_ADDRESS_RESOLVED | Ebano Heights Phase 1 Lot 66 |
+| HID-118210 | NO_ADDRESS_RESOLVED | South San Carlos Subdivision Lot 3 Block 10 |
+| HID-117931 | NO_ADDRESS_RESOLVED | Original Townsite of Alamo, Lot "6 and W1/2 of 7" Block 75 |
+| HID-118201 | NO_ADDRESS_RESOLVED | Alamo Land and Sugar Co.'s Subdivision, Lot "12 (East 5.0 acres)" Block 53 |
+| HID-118228 | NO_ADDRESS_RESOLVED | San Jacinto Estates No. 9 Lot 1 (subdivision name recurs ~7x in the baseline) |
+| HID-118156 | NO_ADDRESS_RESOLVED | Cotton Estates Central Subdivision Lot 22 |
+
+### Per-case outcome
+
+| Filing # | CAD status | Requests | Candidates | Confidence | Notice address changed? |
+|---|---|---|---|---|---|
+| HID-117911 | REQUIRES_HUMAN_APPROVAL (ambiguous) | 5 | 6 | — | No |
+| HID-117957 | **CAD_PARCEL_CONFIRMED** | 6 | 1 | 0.90 | No (parcel/GEO/valuation attached only) |
+| HID-118234 | **CAD_PARCEL_CONFIRMED** | 6 | 2 | 0.98 | No (parcel/GEO/valuation attached only) |
+| HID-118198 | **ERROR** | 0 | — | — | No |
+| HID-117925 | REQUIRES_HUMAN_APPROVAL (ambiguous, 16 candidates) | 3 | 16 | 0.65 | N/A (was never resolved) |
+| HID-118210 | REQUIRES_HUMAN_APPROVAL (ambiguous) | 3 | 2 | 0.65 | N/A |
+| HID-117931 | REQUIRES_HUMAN_APPROVAL (**owner conflict**) | 3 | 2 | 0 | N/A |
+| HID-118201 | REQUIRES_HUMAN_APPROVAL (weak match) | 3 | 1 | 0 | N/A |
+| HID-118228 | REQUIRES_HUMAN_APPROVAL (single candidate, not auto-applied) | 3 | 1 | 0.65 | N/A |
+| HID-118156 | REQUIRES_HUMAN_APPROVAL (**0.97 candidate, held by design**) | 3 | 2 | 0.97 | N/A (Approve required regardless of score) |
+
+Full per-case detail (owner, matched/conflicting fields, parcel ID, GEO
+ID, valuation year/values) is in the GitHub Actions run's job log
+(`Run 10-case regeneration pilot` step) and the `PILOT_*` `AuditLog`
+entries this run created.
+
+### Manual verification of every proposed/confirmed CAD parcel
+
+- **HID-117957** — CAD situs `2318 FLUSHING MEADOWS` vs. notice `2318
+  Flushing Meadows`: exact match. CAD GEO ID `H2675-00-003-0003-00`
+  encodes block 3 / lot 3, matching the notice's `LOT 3, BLOCK 3, Hidden
+  Valley Subdivision Phase 1` exactly. **CONFIRMED CORRECT.**
+- **HID-118234** — CAD situs `3401 WHISKEY DR` vs. notice `3401 N Whisky
+  Dr`: same street number; CAD's record uses the "Whiskey" spelling and
+  omits the "N" directional the notice includes. GEO ID
+  `B4965-00-000-0026-00` encodes lot 26 with no block, matching the
+  notice's `LOT 26, Buchanan Estates` exactly (and encouragingly, on the
+  *same* subdivision as case 117661's earlier bad CAD-owner-conflict
+  match this session — this time correctly resolved with no conflict).
+  **LIKELY CORRECT WITH MINOR SOURCE DISCREPANCY** (spelling +
+  directional only; parcel/lot/subdivision identity is exact).
+- **HID-118156** — held for human approval per design (NO_ADDRESS_RESOLVED
+  cases never auto-apply regardless of score), but the underlying
+  evidence is strong: `matchedFields: [subdivision, lot, ownerName]` —
+  three independent fields corroborate against the notice's `LOT 22,
+  Cotton Estates Central Subdivision` and owner `Michael A. Gonzales and
+  wife Illiana S. Perez`. **CONFIRMED CORRECT** (well-supported;
+  correctly not auto-applied).
+- All five ambiguous/weak REQUIRES_HUMAN_APPROVAL cases (117911, 117925,
+  118210, 118201, 118228) — no candidate was selected or persisted as
+  verified for any of them (`selectedOrProposedCandidate: null`,
+  `existingProductionFieldChanged: false`); there is nothing to
+  misclassify because the safeguards correctly declined to pick a winner.
+- **HID-117931** — the owner-conflict gate fired exactly as designed:
+  `conflictingFields: ["ownerName"]`, confidence forced to 0, no
+  candidate selected, routed to `CAD_OWNER_CONFLICT` manual review
+  instead of being silently attached. **Safeguard verified working.**
+- **No INCORRECT candidate was ever auto-selected or persisted as
+  verified** in this pilot. Nothing to flag/stop under that rule.
+
+### Aggregates
+
+- Existing-address cases CAD-confirmed: **2 of 4** (117957, 118234)
+- Unresolved cases with a viable candidate (held for review): **6 of 6**
+  candidate-bearing unresolved cases were routed to review; **0**
+  auto-applied (by design)
+- Unresolved cases still fully unresolved (no candidates at all): **0**
+  (every unresolved case returned at least one candidate, though most
+  were correctly judged too ambiguous/weak to select)
+- Owner conflicts detected: **1** (117931)
+- Subdivision/other field conflicts: **0**
+- Ambiguous matches (candidates found, none selected): **6**
+- Errors: **1** (118198 — CAD full-text search returned HTTP 400,
+  isolated by the per-case try/catch, did not affect the other 9 cases)
+- Valuation enrichment rate: **2 of 2** CAD-confirmed cases got a full
+  2026 certified valuation (market/appraised/land/improvement values)
+- Total CAD requests: **35** (well under the 60-request global cap and
+  each case under its 10-request per-case cap; max single case: 6)
+- Average requests/case: 3.5
+- Runtime: 80s (pilot step only; ~2 min including install/typecheck)
+- External cost: **$0.00** (public CAD data, no paid API; zero Anthropic
+  calls — this pipeline stage never touches an LLM)
+
+### One real finding: HID-118198 (CAD search HTTP 400)
+
+The Hidalgo CAD full-text search endpoint rejected the query built from
+this case's messy legal description (`44 (N 5ac of N 9.59ac)`) with an
+HTTP 400. The per-case try/catch isolation worked exactly as designed —
+this did not abort the run, and no data was written for this case beyond
+the `PILOT_CASE_FAILED` audit entry. This is a real, not-yet-fixed input-
+sanitization gap in how messy legal-description text (parentheses,
+embedded fractions) is passed to the CAD search — worth a small targeted
+fix before a larger batch, since roughly a handful of the 82 baseline
+cases have similarly irregular legal-description text.
+
+### Safety verification
+
+Re-queried all 10 cases' `Property` rows after the run and diffed against
+the pre-run snapshot: **zero changes** to `propertyStreetAddress`,
+`subdivision`, `lot`, `block`, or `addressResolutionMethod` for any of the
+10 cases. Baseline totals unchanged (82 cases / 46 with-address / 36
+unresolved — no new rows of any kind created). The two CAD-confirmed
+cases only gained `propertyIdNumber` / `geographicId` / lat-long /
+`AppraisalValueHistory` rows, exactly as designed.
+
+### Decision
+
+**A. SAFE TO REGENERATE THE REMAINING 72 BASELINE CASES**, with one
+caveat: fix the HID-118198-style HTTP 400 on messy legal-description text
+first (small, targeted, isolated to query construction) so those cases
+don't silently fall back to zero candidates. Every safeguard exercised
+correctly under real, deliberately-not-easy conditions: the owner-conflict
+gate fired on a genuine conflict, ambiguous/weak matches were correctly
+declined rather than guessed, the human-approval gate held even on a
+0.97-confidence unresolved-case match, and no notice-transcribed address
+was touched anywhere in the run.
+
+**Per the approved scope, the remaining 72 cases are NOT processed. This
+pilot stops here and awaits explicit approval before any further
+regeneration or ingestion.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
