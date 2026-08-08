@@ -109,6 +109,22 @@ function variantsForPerson(personName: string): string[] {
     variants.add(normalizeVariant([first, last].join(" ")));
   }
 
+  // A bare (comma-less) name string is ambiguous between "First [Middle]
+  // Last" and "Last First [Middle]" order -- appraisal-roll owner names are
+  // routinely the latter. When there's a middle name/initial, the
+  // First-Last/Last-First variants above silently drop it, so a real match
+  // like notice "ERICA NELDA RODRIGUEZ" vs CAD roll "RODRIGUEZ ERICA NELDA"
+  // never produces an equal variant on either side and was scoring as a
+  // conflicting owner. These two rotations preserve every token (just
+  // moving the presumed surname to the other end) so a middle name/initial
+  // is never lost, whichever order the source actually used.
+  if (withoutSuffix.length >= 2) {
+    const rotateLastToFront = [withoutSuffix[withoutSuffix.length - 1]!, ...withoutSuffix.slice(0, -1)];
+    const rotateFirstToBack = [...withoutSuffix.slice(1), withoutSuffix[0]!];
+    variants.add(normalizeVariant([...rotateLastToFront, suffix].filter(Boolean).join(" ")));
+    variants.add(normalizeVariant([...rotateFirstToBack, suffix].filter(Boolean).join(" ")));
+  }
+
   return Array.from(variants);
 }
 

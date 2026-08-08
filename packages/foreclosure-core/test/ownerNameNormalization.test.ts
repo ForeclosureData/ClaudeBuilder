@@ -35,6 +35,16 @@ describe("normalizeOwnerName", () => {
   it("recognizes surname-first vs first-name-first as the same person", () => {
     expect(ownerNamesLikelyRelated("Smith, John", "John Smith")).toBe(true);
   });
+
+  // Real Hidalgo case: notice-side "ERICA NELDA RODRIGUEZ" (First Middle
+  // Last) vs the CAD roll's own "RODRIGUEZ ERICA NELDA" (Last First
+  // Middle, comma-less). Confirmed this was being scored as a conflicting
+  // owner because the First-Last/Last-First variants both silently
+  // dropped the middle name, so no variant on either side ever matched.
+  it("recognizes a middle name/initial as the same person across First-Middle-Last vs Last-First-Middle order", () => {
+    expect(ownerNamesLikelyRelated("ERICA NELDA RODRIGUEZ", "RODRIGUEZ ERICA NELDA")).toBe(true);
+    expect(ownerNamesLikelyRelated("Jose Alberto Cisneros", "CISNEROS JOSE ALBERTO")).toBe(true);
+  });
 });
 
 describe("surnamesMatch", () => {

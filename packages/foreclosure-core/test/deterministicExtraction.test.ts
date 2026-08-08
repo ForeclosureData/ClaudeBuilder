@@ -132,6 +132,30 @@ describe("parseLegalDescription", () => {
     const result = parseLegalDescription("...ot 22, ... PALMS ESTATES, Hidalgo Cnty Tx ... Lot 22, Block 1 more text here");
     expect(result).not.toBeNull();
   });
+
+  // Real Hidalgo cases: confirmed the old subdivision regex only recognized
+  // SUBDIVISION/ESTATES/ADDITION/PARK/PLAT, so a name like "WOODLAWN ACRES"
+  // never matched at all, and it then wrongly fell through to the NEXT
+  // comma-separated clause -- capturing the boilerplate phrase "AN ADDITION"
+  // itself as the "subdivision" instead of leaving it null or finding the
+  // real name.
+  it("extracts a subdivision name that itself contains no classification keyword ('WOODLAWN ACRES')", () => {
+    const result = parseLegalDescription(
+      "ALL OF LOT 2, WOODLAWN ACRES, AN ADDITION TO THE CITY OF MERCEDES, HIDALGO COUNTY, TEXAS, ACCORDING TO THE MAP RECORDED IN VOLUME 10, PAGE 31, MAP RECORDS IN THE OFFICE OF THE COUNTY CLERK OF HIDALGO COUNTY, TEXAS, REFERENCE TO WHICH IS HERE MADE FOR ALL PURPOSES.",
+    );
+    expect(result?.subdivision).toBe("WOODLAWN ACRES");
+  });
+
+  it("never returns the bare boilerplate phrase 'AN ADDITION' as a subdivision name", () => {
+    const result = parseLegalDescription("LOT 41, SOL BRILLA UNIT VIII, AN ADDITION TO THE CITY OF PHARR, HIDALGO COUNTY, TEXAS,");
+    expect(result?.subdivision).toBe("SOL BRILLA UNIT VIII");
+    expect(result?.subdivision).not.toMatch(/^(?:AN\s+)?ADDITION$/i);
+  });
+
+  it("extracts a subdivision name followed by a spelled-out, parenthesized lot number", () => {
+    const result = parseLegalDescription("LOT FIVE (5), TANGLEWOOD AT BENTSEN PALM PHASE I, AN ADDITION");
+    expect(result?.subdivision).toBe("TANGLEWOOD AT BENTSEN PALM PHASE I");
+  });
 });
 
 describe("extractDeterministic (full notice)", () => {
