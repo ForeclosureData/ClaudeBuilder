@@ -1,0 +1,56 @@
+name: Hidalgo Property-Resolution Regeneration Pilot (10 cases)
+
+# One-off, manually-triggered pilot: re-runs the CURRENT (CAD-1..CAD-4-fixed)
+# property-resolution logic against exactly 10 hard-coded, pre-documented
+# ForeclosureCase IDs from the accepted 82-record baseline (see
+# apps/web/scripts/pilot-regenerate-10.mts and docs/DEPLOYMENT.md's pilot
+# report for the case list and full scope/safety writeup). CAD requests are
+# rate-limited (~2s/request), so this runs here rather than as a Netlify
+# Function, same reasoning as hidalgo-ingestion.yml.
+#
+# Does NOT ingest, does NOT create SourceDocuments/ForeclosureCases, does
+# NOT call any AI/LLM, and never overwrites a notice-transcribed Property
+# address -- see the script's own header comment for the full safety
+# contract. Case count is hard-coded in the script, not an input, so this
+# workflow cannot accidentally be pointed at more than 10 cases.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Run 10-case regeneration pilot
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          PILOT_MAX_REQUESTS_PER_CASE: "10"
+          PILOT_MAX_GLOBAL_REQUESTS: "60"
+          PILOT_VALUATION_MAX_YEARS_BACK: "2"
+        run: pnpm --filter @foreclosuredata/web run pilot:regenerate-10

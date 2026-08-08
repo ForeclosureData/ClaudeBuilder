@@ -9,7 +9,8 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "ingest:hidalgo:ci": "tsx scripts/ci-ingest-hidalgo.mts"
+    "ingest:hidalgo:ci": "tsx scripts/ci-ingest-hidalgo.mts",
+    "pilot:regenerate-10": "tsx scripts/pilot-regenerate-10.mts"
   },
   "dependencies": {
     "@netlify/database": "^1.0.0",
