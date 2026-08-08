@@ -134,6 +134,15 @@ describe("sanitizeCadSearchText", () => {
     expect(sanitizeCadSearchText(`LOT "14" #3, Sunrise Terrace's Subdivision`)).toBe("LOT 14 3, Sunrise Terrace s Subdivision");
   });
 
+  it("strips semicolons from multi-sentence compound transcriptions (HID-118198's remaining text after meta-commentary removal)", () => {
+    const sanitized = sanitizeCadSearchText(
+      "North 5 acres of the North 9.59 acres of LOT 44, Hidalgo County, Texas; 4.99 acres, more or less; Parcel ID G59003A000004420",
+    );
+    expect(sanitized).not.toContain(";");
+    expect(sanitized).toContain("LOT 44");
+    expect(sanitized).toContain("Parcel ID G59003A000004420");
+  });
+
   it("collapses repeated whitespace left behind by stripping", () => {
     expect(sanitizeCadSearchText("LOT   14,    BLOCK   3")).toBe("LOT 14, BLOCK 3");
   });

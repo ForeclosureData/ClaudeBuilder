@@ -156,8 +156,13 @@ export function sanitizeCadSearchText(raw: string | null | undefined): string | 
   // an unspaced "W12" that would search as a different lot number.
   text = text.replace(/\//g, " ");
   // Punctuation not observed to appear in normal working legal
-  // descriptions and not needed for a full-text match.
-  text = text.replace(/["'#]/g, " ");
+  // descriptions and not needed for a full-text match. Semicolons in
+  // particular show up when a raw transcription strings multiple
+  // sentences together (e.g. "...Texas; 4.99 acres, more or less;
+  // Parcel ID ...") -- confirmed live (HID-118198) to still trigger an
+  // HTTP 400 even after the meta-commentary/parens/slashes above are
+  // handled.
+  text = text.replace(/["'#;]/g, " ");
   text = text.replace(/\s+/g, " ").trim();
   if (text.length < 3) return null;
   return text;
