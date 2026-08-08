@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseLegalDescriptionTokens, tokensOverlap, buildLegalDescriptionCacheKey } from "../src/address-resolution/legalDescriptionParsing";
+import { parseLegalDescriptionTokens, tokensOverlap, buildLegalDescriptionCacheKey, sanitizeCadSearchText } from "../src/address-resolution/legalDescriptionParsing";
 
 describe("parseLegalDescriptionTokens", () => {
   it("extracts subdivision, lot, and block from a typical notice string", () => {
@@ -106,5 +106,75 @@ describe("buildLegalDescriptionCacheKey", () => {
 
   it("returns null when there is nothing stable to key on", () => {
     expect(buildLegalDescriptionCacheKey({})).toBeNull();
+  });
+});
+
+describe("sanitizeCadSearchText", () => {
+  it("strips meta-commentary about the transcription itself (HID-118198 structure)", () => {
+    const raw =
+      "North 5 acres of the North 9.59 acres of LOT 44 (subdivision name obscured by handwriting on the source document), Hidalgo County, Texas";
+    const sanitized = sanitizeCadSearchText(raw);
+    expect(sanitized).not.toBeNull();
+    expect(sanitized).not.toMatch(/obscured/i);
+    expect(sanitized).not.toMatch(/handwriting/i);
+    expect(sanitized).toMatch(/LOT 44/);
+    expect(sanitized).toMatch(/Hidalgo County/);
+  });
+
+  it("de-parenthesizes legitimate acreage/fraction qualifiers instead of dropping them", () => {
+    expect(sanitizeCadSearchText("LOT 12 (East 5.0 acres), Block 53")).toBe("LOT 12 East 5.0 acres , Block 53");
+    expect(sanitizeCadSearchText("LOT 44 (N 5ac of N 9.59ac)")).toBe("LOT 44 N 5ac of N 9.59ac");
+  });
+
+  it("spaces out fraction slashes rather than silently collapsing the lot number", () => {
+    expect(sanitizeCadSearchText("LOT 6 and W1/2 of 7, Block 75")).toBe("LOT 6 and W1 2 of 7, Block 75");
+  });
+
+  it("strips other punctuation not needed for a full-text match", () => {
+    expect(sanitizeCadSearchText(`LOT "14" #3, Sunrise Terrace's Subdivision`)).toBe("LOT 14 3, Sunrise Terrace s Subdivision");
+  });
+
+  it("collapses repeated whitespace left behind by stripping", () => {
+    expect(sanitizeCadSearchText("LOT   14,    BLOCK   3")).toBe("LOT 14, BLOCK 3");
+  });
+
+  it("passes normal, already-clean legal descriptions through essentially unchanged", () => {
+    expect(sanitizeCadSearchText("LOT 3, BLOCK 3, Hidden Valley Subdivision Phase 1, Weslaco, Hidalgo County, Texas")).toBe(
+      "LOT 3, BLOCK 3, Hidden Valley Subdivision Phase 1, Weslaco, Hidalgo County, Texas",
+    );
+  });
+
+  it("recognizes several realistic meta-commentary phrasings, not just one", () => {
+    for (const phrase of [
+      "(owner name illegible on the source document)",
+      "(text unclear due to poor scan quality)",
+      "(portion of the legal description was redacted)",
+      "(not legible in the original filing)",
+    ]) {
+      const sanitized = sanitizeCadSearchText(`LOT 5, BLOCK 2, Example Subdivision ${phrase}`);
+      expect(sanitized).not.toBeNull();
+      expect(sanitized!.length).toBeLessThan(`LOT 5, BLOCK 2, Example Subdivision ${phrase}`.length);
+      expect(sanitized).toMatch(/Example Subdivision/i);
+    }
+  });
+
+  it("returns null for empty, whitespace-only, or nullish input", () => {
+    expect(sanitizeCadSearchText(null)).toBeNull();
+    expect(sanitizeCadSearchText(undefined)).toBeNull();
+    expect(sanitizeCadSearchText("")).toBeNull();
+    expect(sanitizeCadSearchText("   ")).toBeNull();
+  });
+
+  it("returns null (never an over-broad empty-ish query) when nothing search-worthy survives sanitization", () => {
+    expect(sanitizeCadSearchText("()")).toBeNull();
+    expect(sanitizeCadSearchText('"/')).toBeNull();
+  });
+
+  it("never rewrites legal meaning -- only removes/spaces characters, no word substitution", () => {
+    const raw = "LOT 12 (East 5.0 acres), Alamo Land and Sugar Company's Subdivision, Block 53";
+    const sanitized = sanitizeCadSearchText(raw)!;
+    for (const word of ["LOT", "12", "East", "5.0", "acres", "Alamo", "Land", "and", "Sugar", "Company", "Subdivision", "Block", "53"]) {
+      expect(sanitized).toContain(word);
+    }
   });
 });

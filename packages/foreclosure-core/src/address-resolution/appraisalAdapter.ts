@@ -8,7 +8,7 @@ import type {
   AppraisalValueYear,
 } from "@foreclosuredata/types";
 import { searchFullText, searchStructured, mapRowToCandidate, getValuationHistory, type RawPropertyRow } from "./hidalgoCadClient";
-import { parseLegalDescriptionTokens, normalizeToken } from "./legalDescriptionParsing";
+import { parseLegalDescriptionTokens, normalizeToken, sanitizeCadSearchText } from "./legalDescriptionParsing";
 
 export type {
   CountyAppraisalAdapter,
@@ -174,7 +174,16 @@ export class HidalgoCountyAppraisalAdapter implements CountyAppraisalAdapter {
       return rows.map(mapRowToCandidate);
     }
     if (query.legalDescription) {
-      return (await searchFullText(query.legalDescription, { budget })).map(mapRowToCandidate);
+      // The raw legal-description text as transcribed can carry
+      // meta-commentary ("(subdivision name obscured by handwriting...)")
+      // and punctuation (parens, slashes) the full-text endpoint rejects
+      // with an HTTP 400 -- sanitize for search purposes only, never for
+      // storage/display (see sanitizeCadSearchText's doc comment). A case
+      // with nothing search-worthy left after sanitizing is correctly
+      // treated as having no legal-description evidence to search on.
+      const sanitized = sanitizeCadSearchText(query.legalDescription);
+      if (!sanitized) return [];
+      return (await searchFullText(sanitized, { budget })).map(mapRowToCandidate);
     }
     if (query.ownerNames?.length) {
       // Precise attempt first: the complete stated name as one full-text

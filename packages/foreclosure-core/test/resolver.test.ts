@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { resolvePropertyAddress } from "../src/address-resolution/resolver";
 import { MockCountyAppraisalAdapter } from "../src/address-resolution/appraisalAdapter";
-import type { AppraisalPropertyCandidate } from "@foreclosuredata/types";
+import type { AppraisalPropertyCandidate, CountyAppraisalAdapter } from "@foreclosuredata/types";
 
 const baseRecord: AppraisalPropertyCandidate = {
   sourcePropertyId: "P-001",
@@ -367,5 +367,73 @@ describe("resolvePropertyAddress", () => {
     );
     expect(result.resolution.requiresManualReview).toBe(true);
     expect(result.ownerConflictOnBestMatch).toBe(true);
+  });
+
+  it("isolates a single search strategy's failure so remaining strategies still run (HID-118198-style CAD error)", async () => {
+    // Simulates a live CAD HTTP error (e.g. an HTTP 400 from a malformed
+    // full-text query) on the legal-description strategy specifically --
+    // the owner-name-alone strategy after it should still get a chance to
+    // run and find the real candidate, rather than the whole resolution
+    // attempt dying with zero candidates.
+    const throwingAdapter: CountyAppraisalAdapter = {
+      countyCode: "hidalgo-tx",
+      countyName: "Hidalgo",
+      stateCode: "TX",
+      sourceName: "Simulated failing source",
+      sourceUrl: "https://example-fixture.local",
+      capabilities: {
+        searchByOwnerName: true,
+        searchByAddress: false,
+        searchByParcelId: false,
+        searchByLegalDescription: true,
+        searchBySubdivision: false,
+        searchByLotBlock: false,
+        searchByMap: false,
+        bulkDataAvailable: false,
+        officialApiAvailable: true,
+      },
+      async searchProperties(query) {
+        if (query.legalDescription) {
+          throw new Error("Hidalgo CAD search failed: HTTP 400 for /public/property/searchfulltext");
+        }
+        if (query.ownerNames?.length) {
+          return [baseRecord];
+        }
+        return [];
+      },
+      async getPropertyDetails(sourcePropertyId: string) {
+        if (sourcePropertyId === baseRecord.sourcePropertyId) return baseRecord;
+        throw new Error("not found");
+      },
+      async getAccessMetadata() {
+        return { officialApiAvailable: true, bulkDataAvailable: false, requiresManualAccess: false, notes: "test" };
+      },
+    };
+
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: null,
+        statedAddressMethod: null,
+        legalDescription: {
+          rawText: "North 5 acres of the North 9.59 acres of LOT 44 (subdivision name obscured by handwriting on the source document)",
+          subdivision: null,
+          lot: "44 (N 5ac of N 9.59ac)",
+          block: null,
+          acreage: null,
+        },
+        ownerNames: ["John A. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      throwingAdapter,
+    );
+
+    // The legal-description strategy threw and contributed nothing, but
+    // the owner-name-alone strategy after it still ran and found the
+    // candidate -- the whole resolution attempt did not die.
+    expect(result.candidates.length).toBe(1);
+    expect(result.candidates[0]?.sourcePropertyId).toBe(baseRecord.sourcePropertyId);
   });
 });

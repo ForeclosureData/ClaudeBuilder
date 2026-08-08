@@ -123,3 +123,42 @@ export function buildLegalDescriptionCacheKey(input: {
   const rawText = normalizeToken(input.rawText);
   return rawText ? `RAWTEXT:${rawText}` : null;
 }
+
+// Meta-commentary about the transcription itself, not part of the legal
+// description -- e.g. "(subdivision name obscured by handwriting on the
+// source document)". Stripped entirely (parens and contents) rather than
+// just de-parenthesized, since prose like this is never a useful search
+// term and observed live to trigger an HTTP 400 from Hidalgo CAD's
+// full-text endpoint (see HID-118198, docs/DEPLOYMENT.md's regeneration
+// pilot report).
+const META_COMMENTARY_PAREN_RE = /\([^()]*\b(?:obscured|illegible|unreadable|unclear|redacted|handwrit\w*|not\s+recoverable|not\s+legible|cannot\s+be\s+read)\b[^()]*\)/gi;
+
+/**
+ * Conservative, mechanical normalization of legal-description text for use
+ * as CAD *search input only* -- never applied to the stored/displayed raw
+ * text (that's preserved verbatim everywhere else). Purely removes/spaces
+ * characters and phrases observed to break Hidalgo CAD's full-text search
+ * endpoint; never rewrites legal meaning or guesses at intent. Returns
+ * null when nothing search-worthy remains (avoids sending an empty or
+ * near-empty query, which would return an over-broad, useless result set
+ * rather than a real match).
+ */
+export function sanitizeCadSearchText(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let text = raw;
+  text = text.replace(META_COMMENTARY_PAREN_RE, " ");
+  // Legitimate parenthetical qualifiers (e.g. "(N 5ac of N 9.59ac)",
+  // "(East 5.0 acres)") carry real evidence -- de-parenthesize rather
+  // than strip, keeping the inner words as loose search terms.
+  text = text.replace(/[()]/g, " ");
+  // Fraction/compound-lot slashes (e.g. "W1/2") -- space them out rather
+  // than dropping the slash silently, so "W1/2" becomes "W1 2" instead of
+  // an unspaced "W12" that would search as a different lot number.
+  text = text.replace(/\//g, " ");
+  // Punctuation not observed to appear in normal working legal
+  // descriptions and not needed for a full-text match.
+  text = text.replace(/["'#]/g, " ");
+  text = text.replace(/\s+/g, " ").trim();
+  if (text.length < 3) return null;
+  return text;
+}

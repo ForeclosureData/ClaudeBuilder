@@ -344,9 +344,24 @@ async function gatherCandidates(
   const spend = async (query: Parameters<CountyAppraisalAdapter["searchProperties"]>[0]) => {
     if (!hasBudget()) return null;
     strategiesAttempted += 1;
-    const result = await adapter.searchProperties(query, budget);
-    add(result);
-    return result;
+    // One strategy's failure (e.g. a live CAD HTTP error) must not abort
+    // the remaining strategies for this case -- isolate it here so, say,
+    // a rejected legal-description query still leaves the owner-name
+    // fallback strategies below it a chance to run. The failed request
+    // has already spent its budget (see hidalgoCadClient.ts's fetchPage,
+    // which decrements before the HTTP call), so this can't loop or
+    // over-spend -- it just means fewer candidates from this one
+    // strategy, same as a strategy that legitimately found nothing.
+    try {
+      const result = await adapter.searchProperties(query, budget);
+      add(result);
+      return result;
+    } catch (err) {
+      console.warn(
+        `[gatherCandidates] search strategy failed, continuing with remaining strategies: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   };
 
   // 0. Situs address -- the most selective query the adapter supports, so
