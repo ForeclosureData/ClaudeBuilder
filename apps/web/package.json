@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "ingest:hidalgo:ci": "tsx scripts/ci-ingest-hidalgo.mts",
-    "pilot:regenerate-10": "tsx scripts/pilot-regenerate-10.mts"
+    "pilot:regenerate-10": "tsx scripts/pilot-regenerate-10.mts",
+    "verify:118198": "tsx scripts/verify-118198.mts"
   },
   "dependencies": {
     "@netlify/database": "^1.0.0",

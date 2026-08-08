@@ -1,0 +1,45 @@
+name: Hidalgo CAD Fix Verification (HID-118198, read-only)
+
+# One-off, manually-triggered: re-tests HID-118198 (the case that hit an
+# HTTP 400 during the 10-case pilot) against the CAD robustness fix in
+# apps/web/scripts/verify-118198.mts. Makes ZERO database writes -- purely
+# a report, run before HID-118198 is included in the 72-case bulk
+# regeneration run. See docs/DEPLOYMENT.md's pilot report for background.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Re-test HID-118198 (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run verify:118198
