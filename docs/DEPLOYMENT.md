@@ -252,8 +252,182 @@ production baseline. No further restore attempt is planned. Derived data
 (property resolution, CAD enrichment, valuations, manual review) will be
 **regenerated** through the current, corrected pipeline — never
 reconstructed by hand and never restored from the pre-wipe snapshot. See
-the regeneration plan tracked alongside this document's history (task
-list) for the bounded, human-approved process that will do that.
+the regeneration plan below for the bounded, human-approved process that
+will do that.
+
+## Derived-data regeneration plan (proposed 2026-08-08 — **NOT executed**)
+
+This plan is written for approval, not action. Nothing described here has
+been run against production. It exists so a future "go" decision has an
+exact, reviewed procedure to execute rather than an improvised one.
+
+### What "derived data" actually means in the current baseline
+
+Checked directly against `packages/database/prisma/seed.ts` before writing
+this plan, since assuming would risk describing the wrong operation:
+
+- The **46 `Property` rows** that already exist in the 82-record baseline
+  are **not** CAD-derived at all — they come straight from a human
+  transcribing each notice PDF during the original data-entry pass
+  (`hidalgo-real-cases.ts`'s per-case `addressMethod` field:
+  `EXPLICIT_STATED` or `COMMONLY_KNOWN_AS_PHRASE`, i.e. the street address
+  is literally printed in the notice text). **Regeneration must not touch
+  these addresses** — they're ground truth, not a stale derived artifact.
+- The **36 remaining cases** have `property: null`, `addressResolutionMethod:
+  UNRESOLVED`, and an open `ManualReviewTask` (`reason: NO_ADDRESS_RESOLVED`)
+  because the notice gives only a legal description. These are the real
+  regeneration target: the current CAD-1..CAD-4-fixed resolver has never
+  been run against them (`AppraisalPropertyCandidate` count is 0 across
+  all 82 cases in the current baseline).
+- Separately, **none of the 82 cases** — including the 46 with a known
+  address — has ever had a county valuation lookup performed under the
+  current schema (`AppraisalValueHistory` count is 0 for all 82). That's
+  a second, independent regeneration target: fetching county
+  appraised/market value + appraisal history for the 46 already-resolved
+  cases.
+- **5 further `ManualReviewTask`s** exist for `POOR_TEXT_QUALITY`
+  (transcription-quality flags, unrelated to address/valuation) — out of
+  scope for this plan.
+
+### The regeneration primitive already exists — it just isn't batched
+
+The exact operation this plan proposes running case-by-case already
+exists: `searchAgain(taskId, foreclosureCaseId)` in
+`apps/web/app/(admin)/admin/property-resolution/page.tsx`, calling the
+current, fixed `resolvePropertyAddress()`. Two properties of it matter a
+lot for how safe this plan is:
+
+- **It never writes to `Property` on its own.** It only writes
+  `AppraisalPropertyCandidate` rows, a `PropertyResolutionAttempt` audit
+  record, and updates the `ManualReviewTask`'s notes. `Property` and
+  `AppraisalValueHistory` only change when a human clicks "Approve" on a
+  specific candidate (`approveCandidate()`) in the admin review queue —
+  same manual gate that already governs every live-ingested notice today.
+  That means simply *generating* candidates in bulk is safe by
+  construction; the one genuinely mutating step stays manual and
+  per-case, exactly as it is now.
+- **Gap to fix before batching it:** `searchAgain()` calls
+  `resolvePropertyAddress(input, adapter)` with no `RequestBudget`
+  argument, so an individual click is technically unbounded (up to ~7
+  search strategies, each capped only by pages-per-search). A new batch
+  script must **not** reuse that call as-is — it must pass an explicit
+  per-case budget (recommend reusing the existing
+  `HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE` convention already used by the
+  live ingestion pipeline, default 10).
+
+### Proposed script (not built, not run)
+
+A new bounded CLI entrypoint, e.g.
+`apps/web/scripts/regenerate-property-candidates.ts`, following the same
+shape as the existing `hidalgo-ingestion.yml` / ingestion-orchestrator
+pattern:
+
+1. Accepts `--limit=N` and/or explicit `--case-ids=...`.
+2. Selects targets in two independent groups: (a) cases with
+   `propertyId: null` and an open `NO_ADDRESS_RESOLVED` task — full
+   multi-strategy candidate search; (b) cases with a `propertyId` already
+   set — a narrower `getPropertyDetails()`/value-history-only lookup,
+   since the address is already known and only valuation data is missing.
+3. For each case, runs the same logic `searchAgain()` runs today —
+   writing `AppraisalPropertyCandidate` + `PropertyResolutionAttempt`,
+   updating the task's notes — with an explicit per-case `RequestBudget`
+   (default 10). **Never** calls `upsertPropertyFromAppraisalData` /
+   never writes `Property` — every result lands in the existing
+   `/admin/property-resolution` queue for manual approval, identical to
+   how a live-ingested notice is reviewed today.
+4. Logs a per-case summary (candidates found, requests used, resolution
+   method) and writes one run-level summary `AuditLog` entry for the
+   batch, in addition to the existing per-case
+   `SEARCH_AGAIN_PROPERTY_CANDIDATES` / `SEARCH_AGAIN_FAILED` entries.
+
+Exact proposed command, once the script above is written, reviewed, and
+approved to run:
+
+```
+pnpm --filter @foreclosuredata/web exec tsx scripts/regenerate-property-candidates.ts --limit=10
+```
+
+Run manually against production (confirm `DATABASE_URL`'s host via the
+same host-print safeguard already in `netlify.toml` before running) —
+**never** via GitHub Actions, **never** on a schedule — so each run is a
+single, deliberate, observable event.
+
+### Expected DB writes
+
+- **10-record run:** up to 10 new `AppraisalPropertyCandidate` batches
+  (typically 1-6 rows each → ~10-60 new rows), 10 new
+  `PropertyResolutionAttempt` rows, 10 updated `ManualReviewTask.notes`,
+  ~10-20 new `AuditLog` rows. **Zero** `Property`/`AppraisalValueHistory`
+  writes (those require manual approval afterward).
+- **82-record run (all at once):** the same shape scaled ~8x — roughly
+  300-500+ new candidate rows, 82 resolution-attempt rows, 82 updated
+  tasks, 90-100+ audit rows.
+
+### Expected AI / CAD cost
+
+- **Zero AI/LLM cost.** Candidate-gathering only calls the Hidalgo CAD
+  adapter (public appraisal-district data), never Claude. The
+  `AI_EXTRACTION_MONTHLY_BUDGET_CENTS` ceiling is untouched.
+- **CAD HTTP requests**, bounded at 10/case by the recommended explicit
+  budget: 10-record run ≤100 requests; 82-record run ≤820 requests.
+  `hidalgoCadClient.ts`'s existing single-in-flight-request +
+  minimum-delay throttling means the 82-record run is a wall-clock-time
+  cost, not a financial one — plan for it to take meaningfully longer,
+  not for it to cost more.
+
+### Rollback / recovery strategy
+
+- Since `Property` is never auto-written, there is structurally nothing
+  to roll back from a correctness standpoint — the worst case is noisy or
+  wrong candidates sitting unapproved in the review queue, which never
+  surfaces on the public site and never touches `Property`.
+- Any bad `AuditLog`/`ManualReviewTask` writes are isolated per
+  `foreclosureCaseId` and can be deleted/reset individually with no
+  cascading effect on other cases.
+- The operation only ever touches `AppraisalPropertyCandidate`,
+  `PropertyResolutionAttempt`, `ManualReviewTask.notes`, and `AuditLog` —
+  never `ForeclosureCase`, `SourceDocument`, `Loan`, `ForeclosureSale`, or
+  existing `Property` rows. The 82-record baseline's core integrity
+  (verified in the recovery-closure check above) cannot be affected by
+  this run regardless of what it finds.
+
+### Verification checklist (post-run, once approved to execute)
+
+- [ ] Re-run the same integrity checks used for recovery closure (counts,
+      no duplicates, no dangling FK references) to confirm the baseline's
+      core rows are unchanged.
+- [ ] Confirm `foreclosureCaseCount` and `sourceDocumentCount` are still
+      82 each (nothing added or removed).
+- [ ] Spot-check 2-3 new `AppraisalPropertyCandidate` rows in
+      `/admin/property-resolution` against the original notice PDF before
+      approving any of them.
+- [ ] Confirm zero `Property` rows changed except where a candidate was
+      explicitly approved by a human.
+- [ ] Review the batch summary `AuditLog` entry for request-count and
+      error totals.
+- [ ] Confirm no case exceeded its per-case CAD request budget.
+
+### Recommendation: 10-record bounded subset first
+
+Run the 10-record subset before the full 82. Reasoning:
+
+- This would be the first live exercise of the CAD-1..CAD-4 fixes against
+  this specific post-wipe database instance — worth confirming
+  end-to-end on a small batch before committing to all 82 at once.
+- It produces a small, hand-reviewable batch in `/admin/property-resolution`
+  to sanity-check match quality before trusting the fixes at scale.
+- The only real cost of the full 82-record run is wall-clock time (CAD
+  rate-limiting) and review-queue volume — nothing is lost by staging it
+  in two passes. If the 10-record pilot looks right, the remaining 72 can
+  follow immediately with the same script and no code changes.
+
+### Explicitly out of scope for this plan
+
+- The 5 `POOR_TEXT_QUALITY` manual-review tasks (unrelated to
+  address/CAD resolution).
+- Auto-approving any candidate — every match still requires a manual
+  click, identical to how live-ingested notices are reviewed today.
+- Any change to ingestion, scheduling, or new-county work.
 
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
