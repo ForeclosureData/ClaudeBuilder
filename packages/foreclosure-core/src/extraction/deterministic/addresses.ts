@@ -96,21 +96,24 @@ function hasNonPropertyContext(noticeText: string, matchIndex: number): boolean 
   return NON_PROPERTY_CONTEXT_RE.test(precedingWindow);
 }
 
-// A Certificate of Posting footer/tracking code sitting on its own line
-// ("25.000352.951-1 11 705 RAMSEY ST...") defeats the digit-run lookbehind
-// above because a plain space separates the barcode from a short stray
-// number that then reads as a plausible house number ("11") -- confirmed
-// live, the real street number ("705") sits just past it. A dense
-// digit/period/hyphen run (7+ characters, at least two separate groups)
-// immediately before the candidate, with at most a single short token
-// between them, is not something a genuine property-address sentence ever
-// has right before the house number -- reject rather than guess which
-// number is real.
-const PRECEDING_BARCODE_NOISE_RE = /\d[\d.\-]{5,}\d\s+(?:\d{1,3}\s+)?$/;
+// A Certificate of Posting footer/tracking code sitting on the SAME LINE as
+// a real address ("25.000352.951-1 11 705 RAMSEY ST...") defeats the
+// digit-run lookbehind above because a plain space separates the barcode
+// from a short stray number that then reads as a plausible house number
+// ("11") -- confirmed live, the real street number ("705") sits just past
+// it. Deliberately scoped to the CURRENT LINE only (text since the last
+// newline) -- a case/filing number on its OWN line immediately followed by
+// the real address on the NEXT line is a completely normal, common notice
+// header (confirmed live: "26-01543\n1715 Texas Ave...") and must never be
+// rejected by this: there, the match starts right after a newline with
+// nothing else on its own line before it, so the current-line prefix is
+// empty and this simply doesn't match.
+const PRECEDING_BARCODE_NOISE_RE = /\d[\d.\-]{5,}\d[ \t]+$/;
 
 function hasPrecedingBarcodeNoise(noticeText: string, matchIndex: number): boolean {
-  const precedingWindow = noticeText.slice(Math.max(0, matchIndex - 30), matchIndex);
-  return PRECEDING_BARCODE_NOISE_RE.test(precedingWindow);
+  const lastNewline = noticeText.lastIndexOf("\n", matchIndex - 1);
+  const currentLinePrefix = noticeText.slice(lastNewline + 1, matchIndex);
+  return PRECEDING_BARCODE_NOISE_RE.test(currentLinePrefix);
 }
 
 export interface DetectedAddress {
