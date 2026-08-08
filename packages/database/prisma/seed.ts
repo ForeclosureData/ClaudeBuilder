@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { realHidalgoCases, type RealHidalgoCase } from "./hidalgo-real-cases";
+import { assertSeedIsAllowedToRun } from "../src/seedGuard";
 
 const prisma = new PrismaClient();
 
@@ -32,6 +33,13 @@ const REAL_TEST_USER_ID = "81aa2215-5b4d-40f6-864a-b52e72a24817";
 const REAL_TEST_USER_EMAIL = "support@foreclosuredata.net";
 
 async function main() {
+  // Hard production guard -- see src/seedGuard.ts. This must run before any
+  // Prisma call: this script deletes real Hidalgo data (wipeHidalgoCases())
+  // before reseeding, and the production build no longer calls this script
+  // automatically, but this is the second, independent layer of protection
+  // in case something ever invokes it directly against a live database.
+  assertSeedIsAllowedToRun();
+
   console.log("Seeding fictional demo data...");
 
   // ── Plans ────────────────────────────────────────────────────────────

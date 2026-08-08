@@ -16,16 +16,13 @@
       if [ -n "$NETLIFY_AUTO_DB_URL" ]; then export DATABASE_URL="$NETLIFY_AUTO_DB_URL"; fi ; \
     fi && \
     export DIRECT_URL="$DATABASE_URL" && \
-    mkdir -p /tmp/dbpush && \
     if [ -n "$DATABASE_URL" ]; then \
-      echo "--- RUNNING prisma db push (diagnostic mode: captured to a file, not yet build-failing -- see db-push-log route) ---" && \
-      (pnpm --filter @foreclosuredata/database run db:push > /tmp/dbpush/push.log 2>&1; echo "EXIT_CODE=$?" >> /tmp/dbpush/push.log) ; \
-      (pnpm --filter @foreclosuredata/database run db:seed || true) ; \
+      node -e "const u=new URL(process.env.DATABASE_URL); console.log('--- Schema migration target host: ' + u.hostname + ' database: ' + u.pathname.slice(1) + ' (credentials never logged) ---');" && \
+      echo "--- RUNNING prisma db push (schema only -- a failure here fails the build; production deploys never run db:seed, see docs/DEPLOYMENT.md) ---" && \
+      pnpm --filter @foreclosuredata/database run db:push ; \
     else \
-      echo "NO DATABASE_URL AVAILABLE" > /tmp/dbpush/push.log; \
+      echo "--- NO DATABASE_URL AVAILABLE, SKIPPING db:push ---"; \
     fi && \
-    mkdir -p apps/web/lib/generated && \
-    node -e "const fs=require('fs'); const log=fs.existsSync('/tmp/dbpush/push.log')?fs.readFileSync('/tmp/dbpush/push.log','utf8'):'NO LOG FILE'; fs.writeFileSync('apps/web/lib/generated/dbPushDebug.ts', 'export const dbPushLog = ' + JSON.stringify(log) + ';');" && \
     echo "--- POST-DB-PUSH PRISMA CLIENT DIAGNOSTIC ---" && \
     (grep -c appraisalPropertyCandidate node_modules/.prisma/client/index.d.ts || echo "MISSING in node_modules/.prisma/client/index.d.ts") && \
     echo "--- END DIAGNOSTIC ---" && \

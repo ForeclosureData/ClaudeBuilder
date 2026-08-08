@@ -1,19 +1,12 @@
 import { NextResponse } from "next/server";
-import { dbPushLog } from "@/lib/generated/dbPushDebug";
 
 /**
- * Diagnostic-only: surfaces the captured stdout/stderr of the most recent
- * production build's `prisma db push` run, since there's no other way to
- * read Netlify's build log from here. See netlify.toml's build command for
- * where dbPushDebug.ts gets (re)generated. Retired to a 410 stub once the
- * db-push investigation concludes, same as this directory's other temporary
- * diagnostic routes.
+ * Retired: the build no longer captures db:push output to a file for
+ * out-of-band reading -- a db:push failure now fails the build outright
+ * (visible directly in Netlify's own build log), so this workaround is no
+ * longer needed. Same neutering approach as this directory's other
+ * temporary diagnostic routes.
  */
-export async function GET(request: Request) {
-  const secret = process.env.INTERNAL_INGEST_SECRET;
-  const authHeader = request.headers.get("authorization");
-  if (!secret || authHeader !== `Bearer ${secret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  return NextResponse.json({ log: dbPushLog });
+export async function GET() {
+  return NextResponse.json({ error: "Gone" }, { status: 410 });
 }

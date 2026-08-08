@@ -14,7 +14,8 @@
     "generate": "prisma generate",
     "postinstall": "prisma generate",
     "build": "prisma generate",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@netlify/database": "^1.0.0",
@@ -24,6 +25,7 @@
     "@types/node": "^20.14.11",
     "prisma": "^5.17.0",
     "tsx": "^4.16.2",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.4"
   }
 }
