@@ -377,13 +377,14 @@ async function processSingleNotice(params: {
   });
 
   if (identityKey) {
-    // findFirst (not findUnique) deliberately: the (countyId, countyFilingNumber)
-    // composite unique constraint is not yet enforced in the deployed schema
-    // (see the schema.prisma comment on ForeclosureCase -- it can't be added
-    // until the pre-existing duplicate rows are cleaned up), so Prisma does not
-    // generate a countyId_countyFilingNumber selector to findUnique against.
-    // Excluding archivedAt: null also means an archived duplicate (once the
-    // cleanup script runs) never counts as "existing" here.
+    // findFirst (not findUnique) deliberately: the composite selector Prisma
+    // generates for the @@unique([countyId, countyFilingNumber]) constraint
+    // can't also filter on archivedAt in the same findUnique call, and
+    // excluding archivedAt: null here means an archived duplicate case never
+    // counts as "existing" -- a re-ingested notice for an archived filing
+    // number correctly creates a fresh active case rather than bouncing off
+    // the old archived one. The DB-level constraint (see schema.prisma) is
+    // still the real guarantee against a race; this is just the fast path.
     const existingCase = await prisma.foreclosureCase.findFirst({
       where: { countyId: identityKey.countyId, countyFilingNumber: identityKey.countyFilingNumber, archivedAt: null },
     });

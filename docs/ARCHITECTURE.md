@@ -2,6 +2,27 @@
 
 > "We read every foreclosure notice so you don't have to."
 
+> **Read this first: CURRENT vs. FUTURE/PLANNED.** This document was
+> written as a target design before most of it was built, and large parts
+> of it are still aspirational rather than real. As of this writing:
+> - **Built and real:** `apps/web` (Next.js), `packages/database`,
+>   `packages/foreclosure-core`, `packages/county-adapters`, the Hidalgo
+>   ingestion pipeline (run via GitHub Actions, not a worker app — see §8),
+>   Supabase Auth wiring, the billing-provider abstraction (mock active in
+>   production; Stripe/Authorize.net exist but are unexercised — see
+>   `docs/BILLING.md`).
+> - **Described here but NOT built:** `apps/mobile` (Expo) and `apps/worker`
+>   (a standalone background job runner) do not exist in the repo at all.
+>   There is no `ProcessingJob` queue runner anywhere — `ProcessingJob` is a
+>   schema model with zero execution code. Everything §8 attributes to
+>   "apps/worker" is, in reality, either a Next.js API route in `apps/web`
+>   or the GitHub Actions workflow in `.github/workflows/`.
+> - Sections below are left as originally written (they're still the right
+>   target design in most cases) but are marked **[PLANNED]** inline
+>   wherever they describe something not yet built, so this file stays
+>   useful without silently misrepresenting the current system. See
+>   `docs/DEPLOYMENT.md` for what's actually deployed today.
+
 ## 1. What this is
 
 ForeclosureData turns Texas county foreclosure-sale notices (PDFs,
@@ -38,10 +59,12 @@ shares no code, database, or runtime with that site.
 ```
 foreclosuredata/
   apps/
-    web/        Next.js 14 (App Router), responsive + PWA, the primary product
-    mobile/     Expo Router app (iOS/Android), auth + read/save flows only
-    worker/     Background job runner: discovery, download, extraction, OCR,
-                resolution, dedup, cancellation checks, cost tracking
+    web/        Next.js 14 (App Router), responsive + PWA, the primary product -- BUILT, real
+    mobile/     [PLANNED, NOT BUILT] Expo Router app (iOS/Android), auth + read/save flows only
+    worker/     [PLANNED, NOT BUILT] Background job runner: discovery, download, extraction, OCR,
+                resolution, dedup, cancellation checks, cost tracking -- today this all
+                runs as apps/web API routes + apps/web/scripts/ci-ingest-hidalgo.mts,
+                invoked by .github/workflows/hidalgo-ingestion.yml (manual dispatch only)
   packages/
     database/          Prisma schema (source of truth for tables), RLS SQL,
                         seed script, generated client — imported by web + worker
@@ -200,7 +223,18 @@ Every request/response is parsed through the shared Zod schema before the
 caller sees it — a malformed API response fails loudly in dev rather than
 producing a silently wrong UI.
 
-## 8. Ingestion pipeline (`apps/worker`, unchanged in substance)
+## 8. Ingestion pipeline [PLANNED shape -- see note below for what's actually built]
+
+> The step sequence below is still the right conceptual model. What's
+> different in reality: there is no `apps/worker` process running this as a
+> long-lived job queue. Today, `apps/web/lib/ingestion/ingestForeclosureNotices.ts`
+> implements this sequence directly, invoked either by an internal API route
+> (secret-gated) or by `apps/web/scripts/ci-ingest-hidalgo.mts` running inside
+> the GitHub Actions workflow -- not a `ProcessingJob` queue being drained by
+> a background worker. `ProcessingJob` remains a schema model with no
+> execution code anywhere. Steps 4 (dedup) and 9-10 (address resolution,
+> manual review) are real and match this description; step 12 (cancellation/
+> postponement recheck) is not yet implemented.
 
 1. `discoverNotices()` (county adapter) lists notices in a date range.
 2. Persist `SourceDocument` metadata if not already known by source URL.
@@ -251,15 +285,12 @@ events are recorded but delivery adapters (`EmailNotifier`,
 `NotificationDelivery` interface — wiring a real provider later touches
 only the adapter, not the event model or the schema.
 
-## 11. Deep linking
+## 11. Deep linking [PLANNED -- `apps/mobile` does not exist]
 
 Canonical property URL: `https://app.foreclosuredata.com/property/{propertyId}`.
-This always works in a browser. `apps/mobile/app.json` configures the same
-scheme (`foreclosuredata://property/{propertyId}`) plus associated
-domains/App Links for the production host, so the installed app intercepts
-the universal link and Expo Router's dynamic route
-(`app/property/[id].tsx`) renders it; without the app installed, the same
-URL serves the responsive web page.
+This always works in a browser today. The mobile-app half of this section
+(`apps/mobile/app.json`, universal links, Expo Router's dynamic route) is
+unbuilt -- there is no mobile app for it to apply to yet.
 
 ## 12. PWA (web)
 
@@ -270,27 +301,38 @@ and installability meta tags in the root layout. Full offline foreclosure
 data is explicitly out of scope for this release — only the app shell/
 fallback is cached.
 
-## 13. What's mocked in this slice vs. real
+## 13. What's mocked vs. real (updated to current status; §s above still describe the original slice-by-slice plan)
 
-| Area | This slice | Production path |
-|---|---|---|
-| Hidalgo discovery | Fixture-based adapter, fabricated demo notices | Real adapter after ToS/rate-limit review (see §14) |
-| OCR | Interface + stub provider | Tesseract.js or a metered OCR API, budget-gated |
-| AI extraction | Schema + prompt scaffold, no-ops without `ANTHROPIC_API_KEY` + budget | Anthropic API, Layer 2 only |
-| Object storage | Local filesystem `StorageAdapter` | Supabase Storage / S3-compatible, same interface |
-| Geocoding | Interface + stub | Metered geocoding API, called after a probable address exists |
-| Supabase project | Env-driven; this sandbox has no live Supabase project, so auth cannot be exercised end-to-end here | Real free-tier Supabase project (see `docs/DEPLOYMENT.md`) |
-| Push notification delivery | Model + preferences stored; adapters are stubs | Expo push service, Web Push (VAPID), transactional email provider |
-| Mobile billing | Abstraction only (`BillingProvider`) | App Store/Play Store billing provider behind the same interface, if required for distribution |
+| Area | Actual current status |
+|---|---|
+| Hidalgo discovery | **Real.** `packages/county-adapters`'s Hidalgo sitemap adapter fetches Hidalgo's actual sitemap.xml and downloads real bundled PDFs. Not a fixture. Note: the sitemap typically exposes only the current/upcoming month's bundle, no backlog. |
+| Hidalgo appraisal-district (CAD) lookup | **Real.** `HidalgoCountyAppraisalAdapter`/`hidalgoCadClient.ts` call Hidalgo's actual public ProdigyCAD-based property search, with a per-notice request budget and rate limiting. |
+| OCR | **Real.** Tesseract.js, invoked per-page only where embedded text is unusable. |
+| AI extraction | **Real, tightly capped.** Anthropic API, gated to fields deterministic extraction leaves unresolved, with a hard per-run cost/call ceiling enforced in the GitHub Actions workflow inputs (defaults: 10 calls, $1.00 USD). |
+| Object storage | Still local filesystem `StorageAdapter` -- not yet moved to Supabase Storage/S3. |
+| Geocoding | Still interface + stub -- no real geocoding provider wired in. |
+| Supabase project | Real, live project used for auth; application data lives in a separate Netlify DB (Neon) Postgres instance, not Supabase's. |
+| Push notification delivery | Still model + preferences stored, adapters are stubs. |
+| Billing | `BILLING_PROVIDER=mock` active in production. Stripe implementation exists as a fallback; Authorize.net implementation exists but "not yet exercised against a live sandbox" per its own code comment. |
+| Scheduled/automatic ingestion | Explicitly **not enabled** -- `workflow_dispatch` only, no `schedule:` trigger, by deliberate choice pending accuracy validation on fresh (never-before-processed) notices. |
 
-## 14. Unknowns / external dependencies before live scraping
+## 14. Unknowns / external dependencies -- status update
 
-- Hidalgo County's actual notice-posting site structure, robots.txt, and
-  terms of use.
-- Whether the Hidalgo Appraisal District exposes a public data export/API
-  for legal-description matching, or requires scraping.
-- Rate-limit-safe polling cadence (`CountySource.pollIntervalMinutes`).
-- OCR/geocoding vendor choice once real document volume is known.
+The original open questions from this section, with what's actually been
+resolved:
 
-Tracked in `docs/BACKLOG.md`; none of these block building the rest of
-the platform against fixture data.
+- Hidalgo County's notice-posting site structure, robots.txt, and terms of
+  use — **reviewed**; the real adapter (§13) was built against those
+  findings.
+- Whether the Hidalgo Appraisal District exposes a public search — **yes**,
+  a public ProdigyCAD-based search exists and is used (§13). Whether this
+  pattern holds for *other* counties is unconfirmed — `docs/COUNTY_ROADMAP.md`'s
+  per-county checklist requires re-verifying this for each new county, not
+  assuming it.
+- Rate-limit-safe polling cadence — addressed for now by *not* polling
+  automatically at all (manual dispatch only); a real cadence decision is
+  deferred until scheduling is turned on.
+- OCR/geocoding vendor choice — OCR is decided (Tesseract.js); geocoding
+  remains unresolved/unstubbed.
+
+Tracked in `docs/BACKLOG.md`.

@@ -834,13 +834,16 @@ model ForeclosureCase {
   appraisalCandidates  AppraisalPropertyCandidate[]
   resolutionAttempts   PropertyResolutionAttempt[]
 
-  // TEMPORARILY NOT ENFORCED: `@@unique([countyId, countyFilingNumber])`
-  // belongs here once the existing 33 duplicate rows across 24 filing
-  // numbers are cleaned up -- `db push` would fail outright against
-  // current production data if applied now (the build's `db push` step
-  // hard-fails the whole deploy on error). Re-added in the cleanup-repair
-  // commit immediately after the archive step runs and verifies zero
-  // remaining (countyId, countyFilingNumber) collisions among active rows.
+  // Re-enabled after the production-safety review confirmed zero duplicate
+  // (countyId, countyFilingNumber) rows in production (all current rows
+  // predate this field and carry countyFilingNumber: null, which Postgres
+  // never treats as colliding with another null under a unique constraint --
+  // this only starts actually constraining once the ingestion pipeline
+  // populates real values, which is exactly the protection it exists for).
+  // Was previously deferred here as "TEMPORARILY NOT ENFORCED" while 33
+  // duplicate rows existed; see git history and docs/DEPLOYMENT.md for that
+  // incident.
+  @@unique([countyId, countyFilingNumber])
   @@index([countyId])
   @@index([propertyId])
   @@index([status])
