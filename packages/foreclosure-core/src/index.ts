@@ -39,3 +39,6 @@ export type { BalanceEstimateInput } from "./loan/balanceEstimator";
 
 export { generateForeclosureSummary } from "./summary/generateSummary";
 export type { SummaryInput } from "./summary/generateSummary";
+
+export { normalizeCountyFilingNumber, buildNoticeIdentityKey } from "./identity/noticeIdentity";
+export type { NoticeIdentityKey } from "./identity/noticeIdentity";

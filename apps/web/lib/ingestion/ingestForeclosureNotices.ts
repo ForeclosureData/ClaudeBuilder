@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { prisma, type Prisma } from "@foreclosuredata/database";
+import { prisma, Prisma } from "@foreclosuredata/database";
 import {
   DocumentProcessingStatus,
   DocumentType,
@@ -21,6 +21,7 @@ import {
   detectStatedPropertyAddress,
   generateForeclosureSummary,
   estimateRemainingBalance,
+  buildNoticeIdentityKey,
   type ResolutionInput,
   type RequestBudget,
 } from "@foreclosuredata/foreclosure-core";
@@ -320,6 +321,19 @@ export async function ingestForeclosureNotices(
   return summary;
 }
 
+/**
+ * True when `err` is Postgres/Prisma's unique-constraint-violation error
+ * (P2002) -- the specific error a losing concurrent insert against the
+ * `ForeclosureCase(countyId, countyFilingNumber)` unique constraint
+ * produces. Exported as its own pure predicate so the "concurrent
+ * ingestion cannot create duplicates" guarantee is directly testable
+ * against a real Prisma error instance, without needing two actual
+ * concurrent database connections.
+ */
+export function isUniqueConstraintViolation(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+}
+
 async function processSingleNotice(params: {
   county: { id: string; slug: string };
   countySourceKey: string;
@@ -331,27 +345,42 @@ async function processSingleNotice(params: {
   const { county, bundledNotice } = params;
   const pageRangeText = null; // page range isn't threaded through BundledNotice today; see documentUrl/countyFilingNumber for provenance instead.
 
+  // Content hash: provenance/change-detection only (see SourceDocument.sha256Hash's
+  // doc comment) -- never notice identity. Two renders of the SAME real
+  // notice can legitimately produce different bytes; conflating that with
+  // "different notice" is exactly the bug this dedup rework fixes.
   const dedupHash = createHash("sha256")
     .update(bundledNotice.fileBuffer ?? Buffer.from(bundledNotice.noticeText, "utf8"))
     .digest("hex");
 
-  const existing = await prisma.sourceDocument.findUnique({ where: { sha256Hash: dedupHash } });
-  if (existing) {
-    return {
-      report: {
-        documentNumber: bundledNotice.countyFilingNumber,
-        bundleUrl: params.bundleSourceUrl,
-        pageRange: pageRangeText,
-        outcome: "duplicate",
-        saleDateIso: null,
-        legalDescriptionSummary: null,
-        addressResolutionMethod: null,
-        addressResolutionConfidence: null,
-        manualReviewReasons: [],
-        overallExtractionConfidence: null,
-        aiFallbackUsed: false,
-      },
-    };
+  // Stable identity: (county, normalized county filing number) -- see
+  // buildNoticeIdentityKey's doc comment. A missing/unparseable filing
+  // number is NEVER treated as "must be new": identityKey is null, there's
+  // nothing to check it against, so it's routed to manual review (via
+  // MISSING_FILING_NUMBER below) instead of silently assumed unique.
+  const identityKey = buildNoticeIdentityKey(county.id, bundledNotice.countyFilingNumber);
+
+  const duplicateReport = (): { report: NoticeReportEntry } => ({
+    report: {
+      documentNumber: bundledNotice.countyFilingNumber,
+      bundleUrl: params.bundleSourceUrl,
+      pageRange: pageRangeText,
+      outcome: "duplicate",
+      saleDateIso: null,
+      legalDescriptionSummary: null,
+      addressResolutionMethod: null,
+      addressResolutionConfidence: null,
+      manualReviewReasons: [],
+      overallExtractionConfidence: null,
+      aiFallbackUsed: false,
+    },
+  });
+
+  if (identityKey) {
+    const existingCase = await prisma.foreclosureCase.findUnique({
+      where: { countyId_countyFilingNumber: identityKey },
+    });
+    if (existingCase) return duplicateReport();
   }
 
   const pipelineResult = await runExtractionPipeline(bundledNotice.noticeText, params.budget);
@@ -429,6 +458,7 @@ async function processSingleNotice(params: {
   }
 
   const manualReviewReasons = [...pipelineResult.manualReviewReasons];
+  if (!identityKey) manualReviewReasons.push("MISSING_FILING_NUMBER");
   if (!property) manualReviewReasons.push("NO_ADDRESS_RESOLVED");
   // The address itself is fine (explicit-stated-address cases always are),
   // but the CAD returned candidates for this notice's legal description/
@@ -451,32 +481,48 @@ async function processSingleNotice(params: {
   const originalPrincipalCents = extracted.originalPrincipalAmount.value !== null ? Math.round(extracted.originalPrincipalAmount.value * 100) : null;
   const statedCurrentBalanceCents = extracted.currentPrincipalBalance.value !== null ? Math.round(extracted.currentPrincipalBalance.value * 100) : null;
 
-  const fc = await prisma.foreclosureCase.create({
-    data: {
-      countyId: county.id,
-      propertyId: property?.id,
-      caseNumber: bundledNotice.countyFilingNumber ? `HID-${bundledNotice.countyFilingNumber}` : null,
-      status: SaleStatus.SCHEDULED,
-      entityType: PartyEntityType.UNKNOWN,
-      borrowerPersonId: grantor.id,
-      grantorPersonId: grantor.id,
-      currentOwnerPersonId: grantor.id,
-      summaryText: generateForeclosureSummary({
-        classification: "UNKNOWN",
-        propertyAddress: resolution.address.resolvedAddress,
-        city: null,
-        subdivision: legalDescription?.subdivision ?? null,
-        saleDateIso: extracted.saleDate.value,
-        borrowerName: grantorName,
-        lenderName: extracted.lenderName.value,
-        originalLoanDateIso: extracted.deedOfTrustDate.value,
-        originalPrincipalCents,
-        currentBalanceStatedCents: statedCurrentBalanceCents,
-        addressResolutionMethod: resolution.address.addressResolutionMethod as never,
-      }),
-      lastVerifiedAt: new Date(),
-    },
-  });
+  let fc;
+  try {
+    fc = await prisma.foreclosureCase.create({
+      data: {
+        countyId: county.id,
+        propertyId: property?.id,
+        caseNumber: bundledNotice.countyFilingNumber ? `HID-${bundledNotice.countyFilingNumber}` : null,
+        countyFilingNumber: identityKey?.countyFilingNumber ?? null,
+        status: SaleStatus.SCHEDULED,
+        entityType: PartyEntityType.UNKNOWN,
+        borrowerPersonId: grantor.id,
+        grantorPersonId: grantor.id,
+        currentOwnerPersonId: grantor.id,
+        summaryText: generateForeclosureSummary({
+          classification: "UNKNOWN",
+          propertyAddress: resolution.address.resolvedAddress,
+          city: null,
+          subdivision: legalDescription?.subdivision ?? null,
+          saleDateIso: extracted.saleDate.value,
+          borrowerName: grantorName,
+          lenderName: extracted.lenderName.value,
+          originalLoanDateIso: extracted.deedOfTrustDate.value,
+          originalPrincipalCents,
+          currentBalanceStatedCents: statedCurrentBalanceCents,
+          addressResolutionMethod: resolution.address.addressResolutionMethod as never,
+        }),
+        lastVerifiedAt: new Date(),
+      },
+    });
+  } catch (err) {
+    // A concurrent ingestion run can pass the findUnique check above for the
+    // same (countyId, countyFilingNumber) before either has inserted --
+    // the database-level unique constraint (not the earlier findUnique,
+    // which can't prevent a race by itself) is what actually guarantees no
+    // duplicate case ever gets created. P2002 here means the other run won
+    // the race; treat this notice as a duplicate rather than crashing the
+    // batch or, worse, silently creating a second case for the same filing.
+    if (identityKey && isUniqueConstraintViolation(err)) {
+      return duplicateReport();
+    }
+    throw err;
+  }
 
   const doc = await prisma.sourceDocument.create({
     data: {

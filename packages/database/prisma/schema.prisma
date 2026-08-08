@@ -209,6 +209,13 @@ enum ManualReviewReason {
   /// tell "the county record itself points at a different owner" apart
   /// from "we found several plausible candidates and couldn't pick one".
   CAD_OWNER_CONFLICT
+  /// No county filing number could be extracted/parsed from this notice --
+  /// the composite (countyId, countyFilingNumber) dedup/identity check has
+  /// nothing to compare against, so this case's uniqueness was never
+  /// verified against already-ingested notices. Never silently treated as
+  /// "must be new"; always routed here for a human to confirm it isn't a
+  /// duplicate of an existing case before treating it as authoritative.
+  MISSING_FILING_NUMBER
 }
 
 enum ManualReviewTaskStatus {
@@ -665,7 +672,17 @@ model SourceDocument {
   pageCount            Int?                     @map("page_count")
   dateCollected        DateTime                 @default(now()) @map("date_collected")
   dateLastChecked      DateTime                 @default(now()) @map("date_last_checked")
-  sha256Hash           String                   @unique @map("sha256_hash")
+  /// Content hash of this specific file's rendered bytes -- provenance and
+  /// change-detection only (e.g. "did the county re-post this exact
+  /// document with different bytes"), never notice IDENTITY. Deliberately
+  /// not unique: the same real notice can legitimately produce different
+  /// bytes across re-renders (non-deterministic image encoding, the county
+  /// re-posting a revised scan, etc.), and conflating "different bytes"
+  /// with "different notice" is exactly the bug that caused duplicate
+  /// ForeclosureCase rows for the same real filing. Identity now lives on
+  /// ForeclosureCase.countyFilingNumber (see there for the composite
+  /// unique constraint).
+  sha256Hash           String                   @map("sha256_hash")
   storageKey           String?                  @map("storage_key")
   extractionVersion    Int                      @default(1) @map("extraction_version")
   extractionConfidence Float?                   @map("extraction_confidence")
@@ -687,6 +704,7 @@ model SourceDocument {
   @@index([countyId])
   @@index([foreclosureCaseId])
   @@index([manualReviewStatus])
+  @@index([sha256Hash])
   @@map("source_documents")
 }
 
@@ -762,6 +780,17 @@ model ForeclosureCase {
   propertyId        String?         @map("property_id")
   property          Property?       @relation(fields: [propertyId], references: [id], onDelete: SetNull)
   caseNumber        String?         @map("case_number")
+  /// Stable notice identity: the county's own filing number, normalized
+  /// (see normalizeCountyFilingNumber() in foreclosure-core). Distinct from
+  /// `caseNumber`, which is a display string ("HID-117634"). This is the
+  /// field the composite (countyId, countyFilingNumber) identity/dedup
+  /// check and unique constraint below are built on -- NOT a content hash,
+  /// which only ever reflects how a specific file was rendered, not which
+  /// real-world notice it is. Set to null when this case is archived as a
+  /// duplicate (see archivedAt) so the unique constraint only ever applies
+  /// to the one active/canonical case per real notice -- the original
+  /// value is preserved in `archivedReason` for audit purposes.
+  countyFilingNumber String? @map("county_filing_number")
   status            SaleStatus      @default(SCHEDULED)
   entityType        PartyEntityType @default(UNKNOWN) @map("entity_type")
   ownerOccupied     Boolean?        @map("owner_occupied")
@@ -779,6 +808,18 @@ model ForeclosureCase {
   summaryGeneratedAt DateTime? @map("summary_generated_at")
   lastVerifiedAt     DateTime? @map("last_verified_at")
 
+  /// Set only when this case has been identified as a duplicate of another
+  /// (real-world-identical) case and archived -- never hard-deleted, so its
+  /// history/audit trail stays intact and queryable. Every public-facing
+  /// and admin listing query must filter `archivedAt: null`.
+  archivedAt     DateTime? @map("archived_at")
+  /// Why this case was archived (includes its original countyFilingNumber
+  /// for audit, since that field itself is cleared on archive).
+  archivedReason String?   @map("archived_reason")
+  mergedIntoCaseId String?           @map("merged_into_case_id")
+  mergedInto        ForeclosureCase? @relation("CaseMerge", fields: [mergedIntoCaseId], references: [id], onDelete: SetNull)
+  mergedDuplicates  ForeclosureCase[] @relation("CaseMerge")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -793,9 +834,11 @@ model ForeclosureCase {
   appraisalCandidates  AppraisalPropertyCandidate[]
   resolutionAttempts   PropertyResolutionAttempt[]
 
+  @@unique([countyId, countyFilingNumber])
   @@index([countyId])
   @@index([propertyId])
   @@index([status])
+  @@index([archivedAt])
   @@map("foreclosure_cases")
 }
 
