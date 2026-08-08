@@ -15,14 +15,14 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [enumValues, manualReviewTaskCount, cadOwnerConflictCount] = await Promise.all([
-      prisma.$queryRaw`SELECT enumlabel FROM pg_enum WHERE enumtypid = 'ManualReviewReason'::regtype ORDER BY enumsortorder`,
+    const [enumTypes, manualReviewTaskCount, cadOwnerConflictCount] = await Promise.all([
+      prisma.$queryRaw`SELECT t.typname, e.enumlabel FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid WHERE t.typname ILIKE '%manualreview%' ORDER BY t.typname, e.enumsortorder`,
       prisma.manualReviewTask.count(),
       prisma.manualReviewTask.count({ where: { reason: "CAD_OWNER_CONFLICT" } }),
     ]);
 
     return NextResponse.json({
-      manualReviewReasonEnumValues: enumValues,
+      manualReviewReasonEnumValues: enumTypes,
       rowCounts: {
         manualReviewTask: manualReviewTaskCount,
         manualReviewTaskCadOwnerConflict: cadOwnerConflictCount,
@@ -49,9 +49,15 @@ export async function POST(request: Request) {
   }
 
   try {
-    await prisma.$executeRawUnsafe(`ALTER TYPE "ManualReviewReason" ADD VALUE IF NOT EXISTS 'CAD_OWNER_CONFLICT';`);
-    const enumValues = await prisma.$queryRaw`SELECT enumlabel FROM pg_enum WHERE enumtypid = 'ManualReviewReason'::regtype ORDER BY enumsortorder`;
-    return NextResponse.json({ ok: true, manualReviewReasonEnumValues: enumValues });
+    const [existingType] = await prisma.$queryRaw<Array<{ typname: string }>>`
+      SELECT DISTINCT t.typname FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid WHERE t.typname ILIKE '%manualreview%'
+    `;
+    if (!existingType) {
+      return NextResponse.json({ error: "No enum type matching '%manualreview%' found in production" }, { status: 500 });
+    }
+    await prisma.$executeRawUnsafe(`ALTER TYPE "${existingType.typname}" ADD VALUE IF NOT EXISTS 'CAD_OWNER_CONFLICT';`);
+    const enumValues = await prisma.$queryRaw`SELECT t.typname, e.enumlabel FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid WHERE t.typname ILIKE '%manualreview%' ORDER BY t.typname, e.enumsortorder`;
+    return NextResponse.json({ ok: true, migratedType: existingType.typname, manualReviewReasonEnumValues: enumValues });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
