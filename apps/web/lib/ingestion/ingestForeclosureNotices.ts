@@ -432,10 +432,15 @@ async function processSingleNotice(params: {
   if (!property) manualReviewReasons.push("NO_ADDRESS_RESOLVED");
   // The address itself is fine (explicit-stated-address cases always are),
   // but the CAD returned candidates for this notice's legal description/
-  // owner that couldn't be confidently attached as enrichment (ambiguous
-  // set, conflicting lot, or a conflicting current owner) -- surface it for
-  // human review rather than silently publishing without county data.
-  if (property && !selectedCandidate && resolution.candidates.length > 0) manualReviewReasons.push("MULTIPLE_APPRAISAL_MATCHES");
+  // owner that couldn't be confidently attached as enrichment -- surface it
+  // for human review rather than silently publishing without county data.
+  // A genuine current-owner conflict on an otherwise strong match gets its
+  // own distinct reason (never auto-accepted regardless of score) so a
+  // reviewer can tell "the county record points at a different owner"
+  // apart from ordinary ambiguity.
+  if (property && !selectedCandidate && resolution.candidates.length > 0) {
+    manualReviewReasons.push(resolution.ownerConflictOnBestMatch ? "CAD_OWNER_CONFLICT" : "MULTIPLE_APPRAISAL_MATCHES");
+  }
 
   // extracted.*.value is expressed in whole dollars (see texasTemplates.ts,
   // which divides its internal cents figure by 100 before wrapping it as an

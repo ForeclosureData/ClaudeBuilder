@@ -220,6 +220,69 @@ describe("resolvePropertyAddress", () => {
     // But no valuation data gets attached to a record with a conflicting owner.
     expect(result.selectedCandidate).toBeNull();
     expect(result.address.propertyId).toBeNull();
+    // And the caller can tell this was specifically an owner conflict, not plain ambiguity.
+    expect(result.ownerConflictOnBestMatch).toBe(true);
+  });
+
+  it("narrows to a single candidate via subdivision+lot alone when the notice's legal description has no block (common real case)", async () => {
+    const noBlockMatch: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-010", parcelId: null, geographicId: null, block: null };
+    const unrelated: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-011", parcelId: null, geographicId: null, ownerName: "Someone Else", situsAddress: "9 Other Ave", subdivision: "North Main Place", lot: "2", block: "1" };
+    const adapter = new MockCountyAppraisalAdapter([noBlockMatch, unrelated]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: "9999 Nonexistent Ln, Nowhere, TX 78500",
+        statedAddressMethod: "EXPLICIT_STATED",
+        legalDescription: { rawText: "LOT 14, Sunrise Terrace Subdivision", subdivision: "Sunrise Terrace Subdivision", lot: "14", block: null, acreage: null },
+        ownerNames: ["John A. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    expect(result.selectedCandidate?.sourcePropertyId).toBe("P-010");
+  });
+
+  it("refuses to enrich via subdivision+lot alone when the matching candidate's owner conflicts, even with no block to check", async () => {
+    const noBlockConflictingOwner: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-012", parcelId: null, geographicId: null, block: null, ownerName: "Someone Entirely Different" };
+    const adapter = new MockCountyAppraisalAdapter([noBlockConflictingOwner]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: "9999 Nonexistent Ln, Nowhere, TX 78500",
+        statedAddressMethod: "EXPLICIT_STATED",
+        legalDescription: { rawText: "LOT 14, Sunrise Terrace Subdivision", subdivision: "Sunrise Terrace Subdivision", lot: "14", block: null, acreage: null },
+        ownerNames: ["John A. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    expect(result.selectedCandidate).toBeNull();
+    expect(result.ownerConflictOnBestMatch).toBe(true);
+  });
+
+  it("refuses to enrich when the only lot-matching candidate sits in a clearly different subdivision", async () => {
+    const differentSubdivision: AppraisalPropertyCandidate = { ...baseRecord, sourcePropertyId: "P-013", parcelId: null, geographicId: null, block: null, subdivision: "Inspiration Road Unit No. 3" };
+    const adapter = new MockCountyAppraisalAdapter([differentSubdivision]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: "9999 Nonexistent Ln, Nowhere, TX 78500",
+        statedAddressMethod: "EXPLICIT_STATED",
+        legalDescription: { rawText: "LOT 14, Buchanan Estates", subdivision: "Buchanan Estates", lot: "14", block: null, acreage: null },
+        ownerNames: ["John A. Smith"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    // Same lot number, same (matching) owner, but a different named subdivision --
+    // never silently accepted as if the lot number alone proved it's the same plat.
+    expect(result.selectedCandidate).toBeNull();
   });
 
   it("still enriches from an unambiguous address-only match even when a broader owner-name strategy adds unrelated noise to the full candidate pool", async () => {
@@ -279,5 +342,30 @@ describe("resolvePropertyAddress", () => {
     );
     expect(result.resolution.requiresManualReview).toBe(true);
     expect(result.resolution.conflictingFields).toContain("lot");
+  });
+
+  it("flags ownerConflictOnBestMatch on the no-stated-address path too, not just the enrichment path", async () => {
+    const adapter = new MockCountyAppraisalAdapter([baseRecord]);
+    const result = await resolvePropertyAddress(
+      {
+        statedPropertyAddress: null,
+        statedAddressMethod: null,
+        legalDescription: {
+          rawText: "LOT 14, BLOCK 3, Sunrise Terrace Subdivision",
+          subdivision: "Sunrise Terrace Subdivision",
+          lot: "14",
+          block: "3",
+          acreage: 0.21,
+        },
+        ownerNames: ["Someone Entirely Different"],
+        ownerMailingAddress: null,
+        propertyIdFromNotice: null,
+        geographicIdFromNotice: null,
+        city: null,
+      },
+      adapter,
+    );
+    expect(result.resolution.requiresManualReview).toBe(true);
+    expect(result.ownerConflictOnBestMatch).toBe(true);
   });
 });

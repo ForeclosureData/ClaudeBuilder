@@ -13,7 +13,7 @@ import { formatCurrencyCents } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
-const ADDRESS_REASONS = ["NO_ADDRESS_RESOLVED", "MULTIPLE_APPRAISAL_MATCHES"] as const;
+const ADDRESS_REASONS = ["NO_ADDRESS_RESOLVED", "MULTIPLE_APPRAISAL_MATCHES", "CAD_OWNER_CONFLICT"] as const;
 
 /** A minimal, provider-agnostic shape covering both AppraisalPropertyCandidate rows and CountyAppraisalAdapter records — the one thing approveCandidate() and the cache-reuse path in searchAgain() both need to write to Property/AppraisalValueHistory. */
 interface ResolvedAppraisalData {

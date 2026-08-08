@@ -108,6 +108,34 @@ describe("resolveFromCandidates", () => {
     expect(result.requiresManualReview).toBe(true);
     expect(result.selectedCandidateId).toBeNull();
   });
+
+  // Regression test for a real bug found investigating the 25-notice production run: a
+  // parcel-ID (or subdivision+lot+block) match's confidence FLOOR (0.99/0.97) was being
+  // applied even when the candidate's owner conflicted with the notice's borrower/grantor,
+  // silently erasing the -0.3 conflictingOwner penalty and auto-accepting a property that
+  // had (at minimum) changed hands since the notice was filed -- exactly the "an otherwise
+  // high score overrides a genuine owner-name conflict" failure mode that must never happen.
+  it("never auto-accepts an exact parcel-ID match when the owner genuinely conflicts", () => {
+    const input: ScoringInput = { ...baseInput, ownerNames: ["Maria Garcia"], parcelId: "P-001" };
+    const result = resolveFromCandidates(input, [record]);
+    expect(result.requiresManualReview).toBe(true);
+    expect(result.selectedCandidateId).toBeNull();
+    expect(result.conflictingFields).toContain("ownerName");
+  });
+
+  it("never auto-accepts a subdivision+lot+block match when the owner genuinely conflicts", () => {
+    const input: ScoringInput = { ...baseInput, ownerNames: ["Maria Garcia"] };
+    const result = resolveFromCandidates(input, [record]);
+    expect(result.requiresManualReview).toBe(true);
+    expect(result.selectedCandidateId).toBeNull();
+  });
+
+  it("still auto-accepts a strong match when the owner name is merely an abbreviated/reordered form, not a conflict", () => {
+    const input: ScoringInput = { ...baseInput, ownerNames: ["Smith, John"] };
+    const result = resolveFromCandidates(input, [record]);
+    expect(result.requiresManualReview).toBe(false);
+    expect(result.selectedCandidateId).toBe("P-001");
+  });
 });
 
 describe("confidence floors (product-specified anchors)", () => {
@@ -152,6 +180,20 @@ describe("confidence floors (product-specified anchors)", () => {
     const conflictingLot: AppraisalPropertyCandidate = { ...record, lot: "99" };
     const [scored] = scoreCandidates(baseInput, [conflictingLot]);
     expect(scored!.conflictingFields).toContain("lot");
+    expect(scored!.score).toBeLessThan(0.97);
+  });
+
+  it("never applies the parcel-ID floor over a genuine owner-name conflict", () => {
+    const input: ScoringInput = { ownerNames: ["Maria Garcia"], streetAddress: null, city: null, parcelId: "P-001", geographicId: null, legalDescriptionRawText: null, subdivision: null, lot: null, block: null, acreage: null, ownerMailingAddress: null };
+    const [scored] = scoreCandidates(input, [{ ...record, subdivision: null, lot: null, block: null, legalDescription: null, acreage: null }]);
+    expect(scored!.conflictingFields).toContain("ownerName");
+    expect(scored!.score).toBeLessThan(0.99);
+  });
+
+  it("never applies the subdivision+lot+block floor over a genuine owner-name conflict", () => {
+    const input: ScoringInput = { ...baseInput, ownerNames: ["Maria Garcia"], parcelId: null, geographicId: null };
+    const [scored] = scoreCandidates(input, [{ ...record, parcelId: null, geographicId: null, legalDescription: null, acreage: null }]);
+    expect(scored!.conflictingFields).toContain("ownerName");
     expect(scored!.score).toBeLessThan(0.97);
   });
 });

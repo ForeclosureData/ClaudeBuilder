@@ -23,6 +23,9 @@ export interface ScoredCandidate {
   conflictingFields: string[];
 }
 
+/** Fields whose conflict must never be papered over by a confidence floor or overridden by an otherwise-high score — a strong match on other evidence is never sufficient to auto-publish a record whose current CAD owner genuinely conflicts with the foreclosure's own borrower/grantor. */
+const CRITICAL_CONFLICT_FIELDS = new Set(["lot", "block", "ownerName"]);
+
 /**
  * Confidence floors for named, canonical matching strategies — the
  * additive WEIGHTS table below still drives fine-grained scoring across
@@ -31,11 +34,16 @@ export interface ScoredCandidate {
  * confidence: exact parcel ID 99%, exact geographic ID 97%, subdivision +
  * lot + block 97%, exact legal description 94%, owner name plus one more
  * corroborating field 88%, owner name alone 65%. A floor never applies
- * over a critical (lot/block) conflict — conflicting evidence always
- * wins over a floor.
+ * over a critical (lot/block/owner) conflict — conflicting evidence always
+ * wins over a floor. Previously only lot/block were checked here, which
+ * let a parcel-ID or subdivision+lot+block match get floored all the way
+ * up to 97-99% confidence despite a simultaneous owner-name conflict
+ * (the -0.3 conflictingOwner penalty was being silently erased) --
+ * confirmed live against the 25-notice production run's cached CAD
+ * candidates (see resolver.test.ts's owner-conflict-overrides-floor case).
  */
 function applyConfidenceFloor(score: number, matchedFields: string[], conflictingFields: string[]): number {
-  if (conflictingFields.some((f) => f === "lot" || f === "block")) return score;
+  if (conflictingFields.some((f) => CRITICAL_CONFLICT_FIELDS.has(f))) return score;
   if (matchedFields.includes("parcelId")) return Math.max(score, 0.99);
   if (matchedFields.includes("geographicId")) return Math.max(score, 0.97);
   if (matchedFields.includes("subdivision") && matchedFields.includes("lot")) return Math.max(score, 0.97);
@@ -226,7 +234,7 @@ export function resolveFromCandidates(
   const second = scored[1];
   const margin = second ? top.score - second.score : top.score;
 
-  const hasCriticalConflict = top.conflictingFields.some((f) => f === "lot" || f === "block");
+  const hasCriticalConflict = top.conflictingFields.some((f) => CRITICAL_CONFLICT_FIELDS.has(f));
   // Owner name alone is never sufficient to auto-publish, regardless of
   // how PROPERTY_MATCH_AUTO_ACCEPT_THRESHOLD is configured — this is a
   // hard rule, not a threshold-tuning outcome.
@@ -257,7 +265,9 @@ export function resolveFromCandidates(
       confidence: top.score,
       resolutionMethod: method,
       explanation: hasCriticalConflict
-        ? `The top candidate scored ${top.score.toFixed(2)} but has a conflicting ${top.conflictingFields.join("/")} — sent to manual review rather than auto-accepted.`
+        ? top.conflictingFields.includes("ownerName")
+          ? `The top candidate scored ${top.score.toFixed(2)} but the county record's current owner conflicts with the foreclosure's borrower/grantor — never auto-accepted regardless of score, sent to manual review.`
+          : `The top candidate scored ${top.score.toFixed(2)} but has a conflicting ${top.conflictingFields.join("/")} — sent to manual review rather than auto-accepted.`
         : isOwnerNameAlone
           ? `The top candidate matched on owner name only (score ${top.score.toFixed(2)}) — owner name alone is never sufficient to auto-publish, sent to manual review.`
           : `The top candidate scored ${top.score.toFixed(2)}, ${second ? `only ${margin.toFixed(2)} ahead of the next candidate (${second.score.toFixed(2)})` : "below the auto-accept threshold"} — sent to manual review.`,

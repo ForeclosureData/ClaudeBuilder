@@ -121,20 +121,54 @@ function stripDiacritics(value: string): string {
 }
 
 /**
+ * Generic words in an entity name that carry no identifying information --
+ * excluded when looking for a person's surname embedded in a trust/entity
+ * name (e.g. "SMITH FAMILY TRUST" -- "SMITH" is the signal, "FAMILY" and
+ * "TRUST" are not).
+ */
+const GENERIC_ENTITY_WORDS = new Set([
+  "TRUST", "LIVING", "REVOCABLE", "IRREVOCABLE", "FAMILY", "ESTATE", "OF", "THE", "AND",
+  "LLC", "L.L.C", "LP", "L.P", "LTD", "CORP", "CORPORATION", "INC", "INCORPORATED", "CO", "COMPANY", "DBA", "D/B/A",
+]);
+
+function significantEntityTokens(entityName: string): string[] {
+  return stripDiacritics(entityName)
+    .toUpperCase()
+    .replace(/[.,]/g, "")
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !GENERIC_ENTITY_WORDS.has(t));
+}
+
+function surnameTokensOf(people: string[]): string[] {
+  return people
+    .map((p) => stripDiacritics(p).toUpperCase().replace(/[.,]/g, "").trim().split(/\s+/).filter(Boolean).pop() ?? "")
+    .filter(Boolean);
+}
+
+/**
  * True when both names share at least one surname in common — much
  * weaker than ownerNamesLikelyRelated (which requires a full-name
  * variant match). Used to avoid treating an abbreviated/partial name
  * ("J. Smith" vs "John A. Smith") as a *conflicting* owner — only a
  * genuinely different surname should count as negative evidence.
+ *
+ * When either side is a trust/entity (very common in Texas for a
+ * homestead placed in a revocable living trust — "JOHN SMITH TRUST" or
+ * "SMITH FAMILY TRUST" are both routinely the *same* person, not a
+ * different owner), every significant word of the entity name is checked
+ * against the other side's surname rather than only the entity string's
+ * last word — an entity name's last word is very often a generic word
+ * like "TRUST" or "LLC", which would otherwise never match a real
+ * surname and wrongly read as a conflicting owner.
  */
 export function surnamesMatch(a: string, b: string): boolean {
   const normA = normalizeOwnerName(a);
   const normB = normalizeOwnerName(b);
-  const surnamesOf = (names: string[]) =>
-    names.map((p) => stripDiacritics(p).toUpperCase().replace(/[.,]/g, "").trim().split(/\s+/).filter(Boolean).pop() ?? "");
-  const surnamesA = surnamesOf(normA.people);
-  const surnamesB = surnamesOf(normB.people);
-  return surnamesA.some((s) => surnamesB.includes(s));
+  const tokensOf = (norm: NormalizedOwnerName) =>
+    norm.isEntity ? norm.people.flatMap((p) => significantEntityTokens(p)) : surnameTokensOf(norm.people);
+  const tokensA = tokensOf(normA);
+  const tokensB = tokensOf(normB);
+  return tokensA.some((t) => tokensB.includes(t));
 }
 
 /** Loose fuzzy match tolerant of the OCR substitutions above — used only as a low-weight scoring signal, never alone. */

@@ -202,6 +202,13 @@ enum ManualReviewReason {
   PROPERTY_CLASSIFICATION_UNCERTAIN
   LOW_CONFIDENCE
   USER_REPORTED
+  /// The CAD's current-owner-of-record for the best-matching candidate
+  /// conflicts with the foreclosure's borrower/grantor -- never auto-
+  /// accepted regardless of how well other fields (address/lot/block)
+  /// matched. Distinct from MULTIPLE_APPRAISAL_MATCHES so a reviewer can
+  /// tell "the county record itself points at a different owner" apart
+  /// from "we found several plausible candidates and couldn't pick one".
+  CAD_OWNER_CONFLICT
 }
 
 enum ManualReviewTaskStatus {

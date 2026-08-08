@@ -45,4 +45,17 @@ describe("surnamesMatch", () => {
   it("returns false for genuinely different surnames", () => {
     expect(surnamesMatch("John Smith", "Maria Garcia")).toBe(false);
   });
+
+  // Real, common Texas pattern: a homeowner places their homestead in a revocable
+  // living trust for estate planning. The CAD's owner-of-record then reads as an
+  // entity name, but it's still the same person -- not a genuine ownership conflict.
+  it("credits a person's surname embedded in their own revocable living trust name", () => {
+    expect(surnamesMatch("John Smith", "John Smith Revocable Living Trust")).toBe(true);
+    expect(surnamesMatch("John Smith", "Smith Family Trust")).toBe(true);
+  });
+
+  it("still flags a genuinely unrelated entity as conflicting, not just because it's a trust/LLC", () => {
+    expect(surnamesMatch("Jamichael Green", "Compass Creative Capital LLC")).toBe(false);
+    expect(surnamesMatch("John Smith", "Garcia Family Trust")).toBe(false);
+  });
 });

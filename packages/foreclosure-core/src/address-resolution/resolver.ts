@@ -1,6 +1,7 @@
 import type { AppraisalPropertyCandidate, CountyAppraisalAdapter, PropertyResolutionResult } from "@foreclosuredata/types";
 import { resolveFromCandidates, type MatchThresholds, type ScoringInput } from "./scoring";
 import { normalizeOwnerName } from "./ownerNameNormalization";
+import { tokensOverlap } from "./legalDescriptionParsing";
 
 export interface ResolutionInput {
   statedPropertyAddress: string | null;
@@ -34,6 +35,8 @@ export interface ResolutionOutcome {
   resolution: PropertyResolutionResult;
   candidates: AppraisalPropertyCandidate[];
   selectedCandidate: AppraisalPropertyCandidate | null;
+  /** True when enrichment specifically found a strong (lot/block/subdivision/address) match whose CAD owner conflicts with the notice's borrower/grantor -- distinct from plain ambiguity, so the caller can raise a more precise manual-review reason. Always false on the non-explicit-address path (see PropertyResolutionResult.conflictingFields there instead). */
+  ownerConflictOnBestMatch: boolean;
   /** How many live adapter.searchProperties() calls were actually made gathering these candidates. */
   requestsUsed: number;
 }
@@ -72,7 +75,7 @@ export async function resolvePropertyAddress(
     // when a single unambiguous match is found, never on owner-name-alone
     // evidence, and never touches resolvedAddress/addressResolutionMethod.
     const { candidates, requestsUsed, addressOnlyCandidates } = await gatherCandidates(input, appraisalAdapter, budget);
-    const enrichment = pickEnrichmentCandidate(candidates, input, addressOnlyCandidates);
+    const { candidate: enrichment, ownerConflictOnBestMatch } = pickEnrichmentCandidate(candidates, input, addressOnlyCandidates);
 
     return {
       address: {
@@ -91,14 +94,19 @@ export async function resolvePropertyAddress(
         resolutionMethod: "explicit_address",
         explanation:
           "Address was explicitly stated in the source document; no appraisal-district lookup was needed to resolve it." +
-          (enrichment ? " A single unambiguous CAD match was found and used to enrich the case with valuation data." : ""),
+          (enrichment
+            ? " A single unambiguous CAD match was found and used to enrich the case with valuation data."
+            : ownerConflictOnBestMatch
+              ? " The best-matching CAD candidate's current owner conflicts with the notice's borrower/grantor -- not auto-attached."
+              : ""),
         matchedFields: ["statedAddress"],
-        conflictingFields: [],
+        conflictingFields: ownerConflictOnBestMatch ? ["ownerName"] : [],
         candidateCount: candidates.length,
         requiresManualReview: false,
       },
       candidates,
       selectedCandidate: enrichment,
+      ownerConflictOnBestMatch,
       requestsUsed,
     };
   }
@@ -146,6 +154,7 @@ export async function resolvePropertyAddress(
     resolution,
     candidates,
     selectedCandidate,
+    ownerConflictOnBestMatch: !selectedCandidate && resolution.conflictingFields.includes("ownerName"),
     requestsUsed,
   };
 }
@@ -164,53 +173,95 @@ export async function resolvePropertyAddress(
  *      strategy available, so it's trusted even when broader strategies
  *      (owner-alone, subdivision-alone) added unrelated candidates to the
  *      full pool below for conflict-detection purposes. If that one
- *      address match conflicts on lot/block or owner name, this returns
- *      null outright rather than falling through to weaker evidence --
- *      an address match that contradicts the notice's own legal
- *      description/owner is a red flag, not something to paper over.
+ *      address match conflicts on lot/block/subdivision or owner name,
+ *      this returns null outright rather than falling through to weaker
+ *      evidence -- an address match that contradicts the notice's own
+ *      legal description/owner is a red flag, not something to paper over.
  *   2. Otherwise, the full gathered pool: either it's the sole candidate
- *      and doesn't contradict a known lot/block/owner, or lot+block from
- *      the notice narrows multiple results down to exactly one.
+ *      and doesn't contradict known evidence, lot+block narrows multiple
+ *      results down to exactly one, or (when the notice's legal
+ *      description has no block at all, which is common) subdivision+lot
+ *      alone does. Real example that motivated the subdivision+lot-only
+ *      branch: a notice stating "LOT 1, REDBUD ESTATES" (no block) had
+ *      exactly one candidate that was an unambiguous owner+subdivision+lot
+ *      match sitting in a 2-candidate pool, but the old code required lot
+ *      AND block together and never even tried a lot-only narrowing --
+ *      confirmed against the 25-notice production run's cached candidates.
  *
  * Also refuses a candidate whose owner name is clearly unrelated to the
- * notice's borrower(s) -- confirmed live: an address+legal-description
- * match can still belong to a *different current owner* than the notice's
- * defaulting borrower (the property may have already changed hands since
- * the notice was filed), which the address/lot check alone wouldn't catch.
- * This only tightens acceptance, never loosens it.
+ * notice's borrower(s), or whose subdivision name is clearly a different
+ * development than the one stated in the notice -- confirmed live: an
+ * address+legal-description match can still belong to a *different
+ * current owner* than the notice's defaulting borrower (the property may
+ * have already changed hands since the notice was filed), and a
+ * subdivision search can return a same-numbered lot from an entirely
+ * different plat. Neither is caught by the lot/block check alone. This
+ * only tightens acceptance, never loosens it.
  */
+interface EnrichmentPick {
+  candidate: AppraisalPropertyCandidate | null;
+  /** True when the reason nothing was auto-attached is specifically a conflicting current owner on an otherwise strong (lot/block/subdivision/address) match -- as opposed to plain ambiguity or a lot/block/subdivision mismatch -- so the caller can raise a distinct, more precise manual-review reason. */
+  ownerConflictOnBestMatch: boolean;
+}
+
 function pickEnrichmentCandidate(
   candidates: AppraisalPropertyCandidate[],
   input: ResolutionInput,
   addressOnlyCandidates: AppraisalPropertyCandidate[] | null,
-): AppraisalPropertyCandidate | null {
+): EnrichmentPick {
   const lot = input.legalDescription?.lot ?? null;
   const block = input.legalDescription?.block ?? null;
-  const conflicts = (c: AppraisalPropertyCandidate) =>
+  const subdivision = input.legalDescription?.subdivision ?? null;
+  const fieldConflicts = (c: AppraisalPropertyCandidate) =>
     (lot !== null && c.lot !== null && normalizeToken(c.lot) !== normalizeToken(lot)) ||
     (block !== null && c.block !== null && normalizeToken(c.block) !== normalizeToken(block)) ||
-    ownerNameConflicts(c.ownerName, input.ownerNames);
+    (subdivision !== null && c.subdivision !== null && !tokensOverlap(subdivision, c.subdivision));
+  const hasOwnerConflict = (c: AppraisalPropertyCandidate) => ownerNameConflicts(c.ownerName, input.ownerNames);
+  const conflicts = (c: AppraisalPropertyCandidate) => fieldConflicts(c) || hasOwnerConflict(c);
+  // True only when a candidate otherwise matches on every known field (lot/
+  // block/subdivision) but is rejected purely because its owner conflicts --
+  // the specific case that must never be silently overridden by a strong
+  // score, per the "never auto-accept despite a genuine owner conflict"
+  // requirement.
+  const isOwnerOnlyConflict = (c: AppraisalPropertyCandidate) => !fieldConflicts(c) && hasOwnerConflict(c);
 
   if (addressOnlyCandidates && addressOnlyCandidates.length === 1) {
     const only = addressOnlyCandidates[0]!;
-    return conflicts(only) ? null : only;
+    return conflicts(only) ? { candidate: null, ownerConflictOnBestMatch: isOwnerOnlyConflict(only) } : { candidate: only, ownerConflictOnBestMatch: false };
   }
 
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return { candidate: null, ownerConflictOnBestMatch: false };
 
   if (candidates.length === 1) {
     const only = candidates[0]!;
-    return conflicts(only) ? null : only;
+    return conflicts(only) ? { candidate: null, ownerConflictOnBestMatch: isOwnerOnlyConflict(only) } : { candidate: only, ownerConflictOnBestMatch: false };
   }
 
   if (lot && block) {
-    const exact = candidates.filter(
-      (c) => c.lot && normalizeToken(c.lot) === normalizeToken(lot) && c.block && normalizeToken(c.block) === normalizeToken(block) && !ownerNameConflicts(c.ownerName, input.ownerNames),
-    );
-    if (exact.length === 1) return exact[0]!;
+    const fieldMatches = candidates.filter((c) => !fieldConflicts(c) && c.lot && normalizeToken(c.lot) === normalizeToken(lot) && c.block && normalizeToken(c.block) === normalizeToken(block));
+    const exact = fieldMatches.filter((c) => !hasOwnerConflict(c));
+    if (exact.length === 1) return { candidate: exact[0]!, ownerConflictOnBestMatch: false };
+    if (exact.length === 0 && fieldMatches.length === 1 && hasOwnerConflict(fieldMatches[0]!)) {
+      return { candidate: null, ownerConflictOnBestMatch: true };
+    }
   }
 
-  return null;
+  // Common real case: the notice's legal description states a subdivision
+  // and lot but no block at all (many Texas plats simply don't have one).
+  // Narrows on subdivision + lot instead, still refusing any owner/
+  // subdivision conflict -- deliberately not tried when block IS known but
+  // didn't narrow to exactly one above, since that would silently ignore a
+  // real block mismatch instead of surfacing it as unresolved.
+  if (!block && lot && subdivision) {
+    const fieldMatches = candidates.filter((c) => !fieldConflicts(c) && c.lot && normalizeToken(c.lot) === normalizeToken(lot) && c.subdivision && tokensOverlap(subdivision, c.subdivision));
+    const exact = fieldMatches.filter((c) => !hasOwnerConflict(c));
+    if (exact.length === 1) return { candidate: exact[0]!, ownerConflictOnBestMatch: false };
+    if (exact.length === 0 && fieldMatches.length === 1 && hasOwnerConflict(fieldMatches[0]!)) {
+      return { candidate: null, ownerConflictOnBestMatch: true };
+    }
+  }
+
+  return { candidate: null, ownerConflictOnBestMatch: false };
 }
 
 const NAME_SUFFIX_WORDS = new Set(["JR", "SR", "II", "III", "IV", "V"]);
