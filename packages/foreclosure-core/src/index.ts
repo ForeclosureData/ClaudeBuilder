@@ -42,3 +42,6 @@ export type { SummaryInput } from "./summary/generateSummary";
 
 export { normalizeCountyFilingNumber, buildNoticeIdentityKey } from "./identity/noticeIdentity";
 export type { NoticeIdentityKey } from "./identity/noticeIdentity";
+
+export { chooseCanonicalCase, scoreCanonicalCandidate } from "./dedup/chooseCanonical";
+export type { CanonicalCandidateInput, CanonicalSelectionResult, ScoredCanonicalCandidate } from "./dedup/chooseCanonical";

@@ -11,16 +11,21 @@
     (node -e "console.log(require.resolve('.prisma/client/default', {paths:['./node_modules/@prisma/client']}))" || echo "RESOLVE FAILED") && \
     (grep -c appraisalPropertyCandidate packages/database/node_modules/.prisma/client/index.d.ts 2>/dev/null || echo "no packages/database/node_modules/.prisma/client") && \
     echo "--- END DIAGNOSTIC ---" && \
-    NETLIFY_AUTO_DB_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
-    if [ -n "$NETLIFY_AUTO_DB_URL" ]; then export DATABASE_URL="$NETLIFY_AUTO_DB_URL"; fi && \
-    export DIRECT_URL="$DATABASE_URL" && \
-    if [ -n "$DATABASE_URL" ]; then \
-      echo "--- RUNNING prisma db push (failure fails the build) ---" && \
-      pnpm --filter @foreclosuredata/database run db:push && \
-      pnpm --filter @foreclosuredata/database run db:seed || true; \
-    else \
-      echo "--- NO DATABASE_URL AVAILABLE, SKIPPING db:push/db:seed ---"; \
+    if [ -z "$DATABASE_URL" ]; then \
+      NETLIFY_AUTO_DB_URL="$(node packages/database/scripts/netlify-db-url.cjs)" && \
+      if [ -n "$NETLIFY_AUTO_DB_URL" ]; then export DATABASE_URL="$NETLIFY_AUTO_DB_URL"; fi ; \
     fi && \
+    export DIRECT_URL="$DATABASE_URL" && \
+    mkdir -p /tmp/dbpush && \
+    if [ -n "$DATABASE_URL" ]; then \
+      echo "--- RUNNING prisma db push (diagnostic mode: captured to a file, not yet build-failing -- see db-push-log route) ---" && \
+      (pnpm --filter @foreclosuredata/database run db:push > /tmp/dbpush/push.log 2>&1; echo "EXIT_CODE=$?" >> /tmp/dbpush/push.log) ; \
+      (pnpm --filter @foreclosuredata/database run db:seed || true) ; \
+    else \
+      echo "NO DATABASE_URL AVAILABLE" > /tmp/dbpush/push.log; \
+    fi && \
+    mkdir -p apps/web/lib/generated && \
+    node -e "const fs=require('fs'); const log=fs.existsSync('/tmp/dbpush/push.log')?fs.readFileSync('/tmp/dbpush/push.log','utf8'):'NO LOG FILE'; fs.writeFileSync('apps/web/lib/generated/dbPushDebug.ts', 'export const dbPushLog = ' + JSON.stringify(log) + ';');" && \
     echo "--- POST-DB-PUSH PRISMA CLIENT DIAGNOSTIC ---" && \
     (grep -c appraisalPropertyCandidate node_modules/.prisma/client/index.d.ts || echo "MISSING in node_modules/.prisma/client/index.d.ts") && \
     echo "--- END DIAGNOSTIC ---" && \
