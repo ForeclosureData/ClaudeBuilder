@@ -203,9 +203,57 @@ re-enablement):
 - The "Production deploy rules" and "Data migration rules" sections above
   exist directly because of this incident.
 
-**What is still open as of this writing:** whether the pre-wipe data is
-recoverable via a Neon snapshot/branch has not been confirmed — see
-"Backup & recovery" above for exactly what to check.
+## Incident closure decision (2026-08-08) — **CLOSED**
+
+After the fixes above shipped, a recovery assessment was carried out
+against the live Netlify DB (Neon-backed) dashboard for this project.
+Findings and the resulting decision:
+
+- **Recovery points did exist.** Netlify DB takes both an on-publish
+  backup (kept: 10 most recent deploys) and a daily scheduled backup
+  (kept: 30 days). A scheduled backup from **Aug 7, 2026 10:00 PM CDT
+  (≈2026-08-08T03:00Z)** — comfortably before the wipe, which occurred
+  around 2026-08-08T03:37Z — was confirmed present and almost certainly
+  clean.
+- **Recovery was available only as a direct, in-place overwrite of the
+  live `production` branch.** The dashboard's "Restore from backup" flow
+  does not offer a "restore into a new, isolated branch" option — only
+  "Restore now," which immediately replaces the current production
+  database's contents (data *and* schema) and briefly interrupts live
+  connections while it runs. The only stated undo path afterward is
+  contacting Netlify support to revert to the pre-restore contents — not
+  a self-service branch comparison.
+- **Decision: do not restore. Accept the current 82-record baseline as
+  the official production state going forward.** Reasoning:
+  - With no isolated-branch preview available, restoring would have
+    blindly reintroduced the *exact* problems this whole effort was
+    fixing: the 33 duplicate `ForeclosureCase` rows and the wrong
+    117661 CAD subdivision match, both already known-bad and already
+    understood.
+  - The genuinely valuable part of the lost state — CAD-sourced
+    enrichment (parcel IDs, appraised/market values) — is not uniquely
+    lost. It is fully re-derivable by re-running the property-resolution
+    pipeline against the current 82-case baseline, and doing so now
+    benefits from accuracy fixes (owner-conflict gating, subdivision-
+    conflict checking, courthouse-address exclusion, corrected legal-
+    description parsing) that did not exist when the original enrichment
+    was produced — the regenerated data should be *more* trustworthy
+    than what was lost, not merely equivalent to it.
+  - A restore would also roll back the database schema to its pre-wipe
+    state (the `countyFilingNumber`/`archivedAt`/`mergedIntoCaseId`
+    columns and the composite unique constraint didn't exist yet at that
+    snapshot), requiring a further reconciliation deploy before the
+    restored data was even safe to use — one more non-trivial step
+    between "restore" and "actually safe."
+
+**Status: recovery incident CLOSED.** The 82-record seed baseline
+(`packages/database/prisma/hidalgo-real-cases.ts`) is the accepted
+production baseline. No further restore attempt is planned. Derived data
+(property resolution, CAD enrichment, valuations, manual review) will be
+**regenerated** through the current, corrected pipeline — never
+reconstructed by hand and never restored from the pre-wipe snapshot. See
+the regeneration plan tracked alongside this document's history (task
+list) for the bounded, human-approved process that will do that.
 
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
