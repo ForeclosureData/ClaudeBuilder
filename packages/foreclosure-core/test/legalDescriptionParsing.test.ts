@@ -52,6 +52,24 @@ describe("parseLegalDescriptionTokens", () => {
     const parsed = parseLegalDescriptionTokens("LOT 8, Block 2, PALM VALLEY ESTATES SUBDIVISION, an addition to Hidalgo County, Texas.");
     expect(parsed.subdivision).toMatch(/PALM VALLEY ESTATES/i);
   });
+
+  it("recognizes 'SUBD.'/'SUBD'/'SUBDIV.' as equivalent to 'SUBDIVISION'", () => {
+    expect(parseLegalDescriptionTokens("LOT 2, BLOCK 3, EL RANCHO SANTA CRUZ SUBD. PHASE IV.").subdivision).toMatch(/EL RANCHO SANTA CRUZ SUBD/i);
+    expect(parseLegalDescriptionTokens("LOT 9, RIO GRANDE SUBD, Hidalgo County, Texas.").subdivision).toMatch(/RIO GRANDE SUBD/i);
+    expect(parseLegalDescriptionTokens("LOT 9, RIO GRANDE SUBDIV. Hidalgo County, Texas.").subdivision).toMatch(/RIO GRANDE SUBDIV/i);
+  });
+
+  it("never truncates a full 'SUBDIVISION' spelling down to 'SUBD'", () => {
+    // This parser's lazy quantifier already stops at the first
+    // classification word it finds ("ESTATES", before reaching
+    // "SUBDIVISION") -- pre-existing, unrelated to the SUBD/SUBDIV support
+    // added here. What matters for this test is that adding SUBD/SUBDIV to
+    // the alternation didn't introduce a NEW false-short match ending in
+    // bare "SUBD" partway through the word "SUBDIVISION".
+    const parsed = parseLegalDescriptionTokens("LOT 8, Block 2, PALM VALLEY SUBDIVISION, an addition to Hidalgo County, Texas.");
+    expect(parsed.subdivision).toMatch(/PALM VALLEY SUBDIVISION/i);
+    expect(parsed.subdivision).not.toMatch(/^PALM VALLEY SUBD$/i);
+  });
 });
 
 describe("tokensOverlap", () => {

@@ -117,6 +117,72 @@ describe("detectStatedPropertyAddress", () => {
     // Either null (correctly rejected as unreliable) or, if matched, never starting with the barcode's tail digits.
     if (result) expect(result.text.startsWith("404531")).toBe(false);
   });
+
+  // Real Hidalgo case (117643): the notice states no explicit property
+  // address at all -- only the mortgagee's own address ("...mortgagee,
+  // whose address is X Mortgage Co c/o Y Servicing, 8950 Example Blvd,
+  // Coppell, TX 75019...") shows up as address-shaped text. Coppell is
+  // nowhere near Hidalgo County; this must fall through to null (routing
+  // to legal-description-based CAD resolution) rather than publishing the
+  // mortgagee's Dallas-area office as the collateral property.
+  it("never returns a mortgagee's out-of-county mailing address even when no explicit context phrase sits right before it", () => {
+    const text = `5. Obligations Secured. The Deed of Trust executed by EXAMPLE BORROWER provides that it
+      secures the payment of the indebtedness in the original principal amount of $234,671.00. A servicing
+      agreement between the mortgagee, whose address is EXAMPLE MORTGAGE, LLC c/o EXAMPLE MORTGAGE, LLC SBM EXAMPLE SERVICING LLC,
+      8950 Cypress Waters Blvd, Coppell, TX 75019 and the mortgage servicer and Texas Property Code section 51.0025 authorizes
+      the mortgage servicer to collect the debt.`;
+    expect(detectStatedPropertyAddress(text)).toBeNull();
+  });
+
+  it("rejects a confidently-elsewhere city even under a 'Property Address:' label (a mislabeled/misplaced line, not clear identification)", () => {
+    const result = detectStatedPropertyAddress("Property Address: 5177 Example Avenue Suite 1230, Houston, TX 77056");
+    expect(result).toBeNull();
+  });
+
+  it("still finds a real in-county property address when an out-of-county mortgagee address also appears in the same document", () => {
+    const text = `Property Address: 321 Real St, Pharr, Texas 78577\n\nthe mortgagee, whose address is Example Mortgage, LLC, 8950 Example Blvd, Coppell, TX 75019, has appointed a substitute trustee.`;
+    const result = detectStatedPropertyAddress(text);
+    expect(result?.text).toContain("321 Real St");
+  });
+
+  // Real Hidalgo case (117643): a "Certificate of Posting" footer/tracking
+  // code sits on its own line immediately before a real Hidalgo address
+  // ("25.000352.951-1 11 705 RAMSEY ST, SAN JUAN, TX 78585"), separated by
+  // a plain space rather than being fused into one digit run -- the
+  // existing digit-run lookbehind alone doesn't catch this, and San Juan is
+  // in-county so the out-of-county check doesn't either. The stray "11"
+  // reads as a plausible house number if this isn't specifically guarded.
+  it("does not extract a house number from a tracking-code line separated from the barcode by only a short stray number", () => {
+    const text = "posted at the location directed by the Hidalgo County Commissioners Court\n25.000352.951-1 11 705 RAMSEY ST, SAN JUAN, TX 78585";
+    const result = detectStatedPropertyAddress(text);
+    if (result) expect(result.text.startsWith("11 705")).toBe(false);
+  });
+
+  // Real Hidalgo case (117698): the house number and directional prefix ran
+  // together with no space at all ("508E HAWK ST"), which never equals the
+  // CAD's own "508 E HAWK ST" for matching purposes. Conservative: only
+  // splits when the letters are exactly a directional token immediately
+  // followed by more street text, never a number that's simply part of a
+  // longer word.
+  it("inserts a missing space between a house number and a directional prefix", () => {
+    const result = detectStatedPropertyAddress("Property Address: 508E Hawk St, Pharr, Texas 78577");
+    expect(result?.text).toBe("508 E Hawk St, Pharr, Texas 78577");
+  });
+
+  it("supports two-letter directionals (NE/NW/SE/SW) for the same missing-space pattern", () => {
+    const result = detectStatedPropertyAddress("Property Address: 123NE Parkway Dr, McAllen, Texas 78501");
+    expect(result?.text).toBe("123 NE Parkway Dr, McAllen, Texas 78501");
+  });
+
+  it("never splits a house number that's simply followed by a longer word starting with a directional letter", () => {
+    const result = detectStatedPropertyAddress("Property Address: 508Express Blvd, Pharr, Texas 78577");
+    expect(result?.text).toContain("508Express");
+  });
+
+  it("leaves an already-spaced directional prefix unchanged", () => {
+    const result = detectStatedPropertyAddress("Property Address: 700 W La Quinta Dr, Pharr, Texas 78577");
+    expect(result?.text).toBe("700 W La Quinta Dr, Pharr, Texas 78577");
+  });
 });
 
 describe("parseLegalDescription", () => {
@@ -131,6 +197,19 @@ describe("parseLegalDescription", () => {
   it("falls back to a bare Lot/Block sentence when there is no labeled block", () => {
     const result = parseLegalDescription("...ot 22, ... PALMS ESTATES, Hidalgo Cnty Tx ... Lot 22, Block 1 more text here");
     expect(result).not.toBeNull();
+  });
+
+  // Real Hidalgo case (117643): "The property to be sold is described as
+  // follows." uses a PERIOD, not the colon the label regex required --
+  // confirmed this made the whole labeled match fail and fall through to
+  // the newline-truncating bare fallback, losing the subdivision name
+  // entirely even though a complete, well-formed sentence followed.
+  it("accepts a period after 'described as follows' as well as a colon", () => {
+    const result = parseLegalDescription(
+      "1. Property to Be Sold. The property to be sold is described as follows. LOT 17, MINNESOTA VEGAS RANCHES PHASE II, AN\nADDITION TO THE CITY OF SAN JUAN, HIDALGO COUNTY, TEXAS.\n2 Instrument to be Foreclosed.",
+    );
+    expect(result?.lot).toBe("17");
+    expect(result?.subdivision).toContain("MINNESOTA VEGAS RANCHES");
   });
 
   // Real Hidalgo cases: confirmed the old subdivision regex only recognized
@@ -173,6 +252,29 @@ describe("parseLegalDescription", () => {
   it("still returns the word form when no parenthetical digit is present", () => {
     const result = parseLegalDescription("Legal Description: Lot Twenty-Eight, PALM VALLEY ESTATES SUBDIVISION.\n\nOriginal Principal Amount: $1");
     expect(result?.lot).toBe("Twenty-Eight");
+  });
+
+  // Real Hidalgo case (117697): "SUBD." with a period, and separated from
+  // the preceding Block clause by a period rather than a comma -- neither
+  // the abbreviation nor the leading "BLOCK 3." fragment were handled
+  // before, so this notice's subdivision was never extracted at all.
+  describe("SUBD./SUBDIV. abbreviation support", () => {
+    it("recognizes 'SUBD.' as equivalent to 'SUBDIVISION' and strips a leading period-separated Block fragment", () => {
+      const result = parseLegalDescription("LOT 2, BLOCK 3. EL RANCHO SANTA CRUZ SUBD. PHASE IV.");
+      expect(result?.lot).toBe("2");
+      expect(result?.block).toBe("3");
+      expect(result?.subdivision).toBe("EL RANCHO SANTA CRUZ SUBD");
+    });
+
+    it("recognizes bare 'SUBD' (no period) and 'SUBDIV.'", () => {
+      expect(parseLegalDescription("LOT 9, RIO GRANDE SUBD, Hidalgo County, Texas.")?.subdivision).toContain("RIO GRANDE SUBD");
+      expect(parseLegalDescription("LOT 9, RIO GRANDE SUBDIV. Hidalgo County, Texas.")?.subdivision).toContain("RIO GRANDE SUBDIV");
+    });
+
+    it("never truncates a full 'SUBDIVISION' spelling down to 'SUBD'", () => {
+      const result = parseLegalDescription("Legal Description: Lot 8, Block 2, PALM VALLEY ESTATES SUBDIVISION, an addition to Hidalgo County, Texas.\n\nOriginal Principal Amount: $1");
+      expect(result?.subdivision).toContain("PALM VALLEY ESTATES SUBDIVISION");
+    });
   });
 });
 

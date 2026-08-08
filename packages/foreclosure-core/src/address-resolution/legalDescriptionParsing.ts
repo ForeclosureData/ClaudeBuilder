@@ -34,7 +34,12 @@ const GEOGRAPHIC_ID_RE = /\b(?:GEOGRAPHIC\s+ID|GEO\s+ID)\s*[:#]?\s*([0-9A-Z\-]+)
 // A "SUBDIVISION" (or plat-named addition) is everything up to the
 // county/state boilerplate or the first comma-separated clause naming
 // "AN ADDITION TO..." — captured loosely, kept as-is (not over-parsed).
-const SUBDIVISION_RE = /(?:,\s*)?([A-Z0-9 .'\-&]+?(?:SUBDIVISION|ADDITION|ESTATES|TOWNSITE|PARK|PLACE|HEIGHTS|ACRES|MEADOWS|VILLAGE|VILLA[SE]?|COVES?))\b/i;
+// SUBDIV/SUBD (with or without a trailing period) are listed before the
+// full "SUBDIVISION" spelling only for readability -- the trailing \b
+// already prevents a false partial match against "SUBDIVISION" itself
+// (no word boundary between the "D" and the "I" that follows).
+const SUBDIVISION_RE =
+  /(?:,\s*)?([A-Z0-9 .'\-&]+?(?:SUBDIVISION|SUBDIV\.?|SUBD\.?|ADDITION|ESTATES|TOWNSITE|PARK|PLACE|HEIGHTS|ACRES|MEADOWS|VILLAGE|VILLA[SE]?|COVES?))\b/i;
 // Fallback for terse tax-roll style legal descriptions that never use any
 // of the SUBDIVISION_RE classification words at all -- confirmed live,
 // this is actually the common case for Hidalgo CAD's own legalDescription

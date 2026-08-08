@@ -14,10 +14,16 @@ export function parseLegalDescription(noticeText: string): ParsedLegalDescriptio
   // "Property To Be Sold - The property to be sold is described as
   // follows:" rather than a "Legal Description:" label -- confirmed
   // against real August 2026 postings, where only 1 of 5 sampled notices
-  // used the "Legal Description:" label at all.
+  // used the "Legal Description:" label at all. The trailing punctuation
+  // after "follows" is a colon in most, but confirmed at least one real
+  // notice uses a period instead ("...described as follows. LOT 17,
+  // MINNESOTA VEGAS RANCHES...") -- without tolerating that, this whole
+  // labeled match failed and fell through to the newline-truncating bare
+  // fallback below, losing the subdivision name entirely even though a
+  // full, well-formed sentence was right there.
   const labeled =
     noticeText.match(/Legal Description:\s*([\s\S]{0,400}?)(?:\n\s*\n|Original Principal|Substitute Trustee|Date of Sale)/i) ??
-    noticeText.match(/[Tt]he [Pp]roperty to be sold is described as follows:\s*([\s\S]{0,400}?)(?:\n\s*\n|Instrument to be Foreclosed|Original Principal|Substitute Trustee|Date of Sale)/i);
+    noticeText.match(/[Tt]he [Pp]roperty to be sold is described as follows[:.]\s*([\s\S]{0,400}?)(?:\n\s*\n|Instrument to be Foreclosed|Original Principal|Substitute Trustee|Date of Sale)/i);
   const rawText = labeled ? labeled[1]!.replace(/\s+/g, " ").trim() : findLotBlockSentence(noticeText);
   if (!rawText) return null;
 
@@ -44,9 +50,21 @@ export function parseLegalDescription(noticeText: string): ParsedLegalDescriptio
 // parser (address-resolution/legalDescriptionParsing.ts) already handles --
 // this file previously only recognized SUBDIVISION/ESTATES/ADDITION/PARK/
 // PLAT, so a real name like "WOODLAWN ACRES" or "ATWOOD VILLAGE" never
-// matched at all.
+// matched at all. SUBD/SUBDIV (with or without a trailing period) are
+// listed before the full "SUBDIVISION" spelling only for readability --
+// the trailing \b after the whole alternation already prevents "SUBD" from
+// matching a false partial prefix of "SUBDIVISION" (there's no word
+// boundary between the "D" and the "I" that follows), so a real
+// "SUBDIVISION" is never mistakenly short-circuited to "SUBD".
 const SUBDIVISION_TRIGGER_RE =
-  /,\s*([A-Z0-9 .'\-&]{4,}(?:SUBDIVISION|ESTATES|ADDITION|PARK|PLAT|ACRES|HEIGHTS|MEADOWS|VILLAGE|TOWNSITE|COVES?|PLACE))\b/i;
+  /,\s*([A-Z0-9 .'\-&]{4,}(?:SUBDIVISION|SUBDIV\.?|SUBD\.?|ESTATES|ADDITION|PARK|PLAT|ACRES|HEIGHTS|MEADOWS|VILLAGE|TOWNSITE|COVES?|PLACE))\b/i;
+// The comma before a subdivision name is sometimes the ONLY comma between
+// "Lot N, Block M" and the name itself (e.g. "LOT 2, BLOCK 3. EL RANCHO
+// SANTA CRUZ SUBD."), so the trigger regex above can end up capturing the
+// Block clause too since periods are allowed in the character class. This
+// strips a leading "BLOCK <value>." fragment back off rather than widening
+// the character class in a way that could swallow other real content.
+const LEADING_BLOCK_FRAGMENT_RE = /^BLOCK\s+[A-Za-z0-9\-]+\.?\s*/i;
 // Real Hidalgo notices commonly phrase this as "Lot N, [Block M,]
 // SUBDIVISION NAME, an addition to the City of ..." -- the subdivision name
 // itself frequently contains NONE of the classification words above (e.g.
@@ -66,7 +84,7 @@ const BOILERPLATE_ONLY_RE = /^(?:AN\s+)?ADDITION$/i;
 function extractSubdivisionName(rawText: string): string | null {
   const beforeAddition = rawText.match(SUBDIVISION_BEFORE_ADDITION_RE)?.[1]?.trim();
   if (beforeAddition && !BOILERPLATE_ONLY_RE.test(beforeAddition)) return beforeAddition;
-  const triggerWord = rawText.match(SUBDIVISION_TRIGGER_RE)?.[1]?.trim();
+  const triggerWord = rawText.match(SUBDIVISION_TRIGGER_RE)?.[1]?.trim().replace(LEADING_BLOCK_FRAGMENT_RE, "").trim() || null;
   if (triggerWord && !BOILERPLATE_ONLY_RE.test(triggerWord)) return triggerWord;
   return triggerWord ?? beforeAddition ?? null;
 }
