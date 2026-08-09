@@ -55,7 +55,23 @@ export async function GET(request: Request) {
     `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'foreclosure_cases' AND indexdef ILIKE '%county_filing_number%'`,
   );
 
+  const duplicateLinks = await prisma.possibleDuplicateNoticeLink.findMany({
+    include: { caseA: { select: { countyFilingNumber: true } }, caseB: { select: { countyFilingNumber: true } } },
+  });
+  const processingJobCount = await prisma.processingJob.count();
+
   return NextResponse.json({
+    duplicateLinks: duplicateLinks.map((l) => ({
+      caseAFilingNumber: l.caseA.countyFilingNumber,
+      caseBFilingNumber: l.caseB.countyFilingNumber,
+      confidence: l.confidence,
+      score: l.score,
+      matchedFields: l.matchedFields,
+      conflictingFields: l.conflictingFields,
+      status: l.status,
+      explanation: l.explanation,
+    })),
+    processingJobCount,
     databaseUrlHostPort: databaseUrlInfo,
     directUrlHostPort: directUrlInfo,
     databaseUrlEqualsDirectUrlHostPort: sameHostPort,
