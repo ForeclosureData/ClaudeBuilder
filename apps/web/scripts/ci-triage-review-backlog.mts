@@ -17,16 +17,24 @@ import { computePublicationStatus, type PublicationInput } from "@foreclosuredat
 
 type Bucket = "QUICK_APPROVAL" | "MEANINGFUL_REVIEW" | "MISSING_DATA" | "NON_BLOCKING_ENRICHMENT";
 
-const QUICK_APPROVAL_SCORE_FLOOR = 0.9;
-const QUICK_APPROVAL_MARGIN = 0.1;
+// Matches resolver.ts's own PROPERTY_MATCH_MINIMUM_MARGIN default (see
+// packages/foreclosure-core/src/address-resolution/scoring.ts) -- a case
+// only reaches MULTIPLE_APPRAISAL_MATCHES because its top candidate missed
+// auto-accept on score, margin, or being a lone candidate below the
+// auto-accept bar. What makes a review "quick" isn't re-clearing the same
+// absolute score bar (every one of these already failed that once) -- it's
+// whether there's a single dominant candidate (nothing to compare) versus
+// several genuinely close ones (real judgment call).
+const QUICK_APPROVAL_MARGIN = 0.15;
 
 function bucketForTask(reason: string, candidates: Array<{ score: number | null }>): Bucket {
   if (reason === "MULTIPLE_APPRAISAL_MATCHES") {
     if (candidates.length === 0) return "MISSING_DATA";
+    if (candidates.length === 1) return "QUICK_APPROVAL";
     const sorted = [...candidates].map((c) => c.score ?? 0).sort((a, b) => b - a);
     const best = sorted[0] ?? 0;
-    const second = sorted[1];
-    if (best >= QUICK_APPROVAL_SCORE_FLOOR && (second === undefined || best - second >= QUICK_APPROVAL_MARGIN)) return "QUICK_APPROVAL";
+    const second = sorted[1] ?? 0;
+    if (best - second >= QUICK_APPROVAL_MARGIN) return "QUICK_APPROVAL";
     return "MEANINGFUL_REVIEW";
   }
   if (reason === "NO_ADDRESS_RESOLVED") {
