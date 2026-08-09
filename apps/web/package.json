@@ -13,6 +13,7 @@
     "select:hidalgo-target:ci": "tsx scripts/ci-select-hidalgo-target.mts",
     "report:hidalgo-batch:ci": "tsx scripts/ci-report-batch.mts",
     "reconcile:hidalgo-legacy:ci": "tsx scripts/ci-reconcile-legacy.mts",
+    "cleanup:hidalgo-legacy:ci": "tsx scripts/ci-cleanup-legacy-duplicates.mts",
     "pilot:regenerate-10": "tsx scripts/pilot-regenerate-10.mts",
     "verify:118198": "tsx scripts/verify-118198.mts",
     "regenerate:remaining-72": "tsx scripts/regenerate-remaining-72.mts",

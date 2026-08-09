@@ -1,0 +1,50 @@
+name: Hidalgo Legacy Duplicate Cleanup
+
+# Archives the two confirmed legacy/ingested duplicate pairs found by the
+# reconciliation run (see hidalgo-reconcile-legacy.yml). Defaults to
+# dry_run=true (zero writes). Only set dry_run=false after the dry-run
+# output has been reviewed and approved. See
+# apps/web/scripts/ci-cleanup-legacy-duplicates.mts.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = zero writes, print the plan only. false = execute the archive/backfill."
+        required: false
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run legacy-duplicate cleanup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: pnpm --filter @foreclosuredata/web run cleanup:hidalgo-legacy:ci
