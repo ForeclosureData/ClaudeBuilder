@@ -12,7 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/table";
-import { formatCurrencyCents, formatDate } from "@/lib/utils";
+import { formatCurrencyCents, formatDate, formatBorrowerName } from "@/lib/utils";
 import { saleStatusLabels } from "@foreclosuredata/config";
 
 export const revalidate = 60;
@@ -107,7 +107,7 @@ export default async function CountyPage({ params }: { params: { slug: string } 
                     <Td>{fc.property?.city ?? "—"}</Td>
                     <Td>{formatDate(fc.sales[0]?.saleDate?.toISOString() ?? null)}</Td>
                     <Td><Badge tone={fc.status === "CANCELED" ? "danger" : "success"}>{saleStatusLabels[fc.status]}</Badge></Td>
-                    {unlocked && <Td>{fc.borrower?.fullName ?? "Unknown"}</Td>}
+                    {unlocked && <Td>{formatBorrowerName(fc.borrower?.fullName)}</Td>}
                     {unlocked && <Td>{formatCurrencyCents(fc.property?.appraisedValueCents ?? null)}</Td>}
                   </Tr>
                 ))}

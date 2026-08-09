@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { ConfidenceBadge, EstimatedBadge } from "@/components/properties/confidence-badge";
 import { SaveButton } from "@/components/properties/save-button";
 import { CorrectionReportForm } from "@/components/properties/correction-report-form";
-import { formatCurrencyCents, formatDate, daysUntil } from "@/lib/utils";
+import { formatCurrencyCents, formatDate, daysUntil, formatBorrowerName } from "@/lib/utils";
 import { saleStatusLabels, addressResolutionMethodLabels, fieldSourceLabels } from "@foreclosuredata/config";
 
 const COUNTY_VALUES_DISCLOSURE =
@@ -110,7 +110,7 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
             <CardContent className="grid grid-cols-2 gap-4 text-sm">
               <Field label="Sale date" value={formatDate(sale?.saleDate?.toISOString() ?? null)} extra={days !== null && days >= 0 ? `${days} day${days === 1 ? "" : "s"} away` : undefined} />
               <Field label="Sale status"><Badge tone={fc.status === "CANCELED" ? "danger" : "success"}>{saleStatusLabels[fc.status]}</Badge></Field>
-              <Field label="Borrower" value={unlocked ? fc.borrower?.fullName ?? "Unknown" : "Upgrade to view"} />
+              <Field label="Borrower" value={unlocked ? formatBorrowerName(fc.borrower?.fullName) : "Upgrade to view"} />
               <Field label="Current owner" value={unlocked ? fc.currentOwner?.fullName ?? "Unknown" : "Upgrade to view"} />
               <Field label="Lender" value={unlocked ? fc.loan?.currentMortgagee?.name ?? fc.loan?.originalLender?.name ?? "Unknown" : "Upgrade to view"} />
               <Field label="Original principal" value={formatCurrencyCents(fc.loan?.originalPrincipalAmountCents ?? null)} />

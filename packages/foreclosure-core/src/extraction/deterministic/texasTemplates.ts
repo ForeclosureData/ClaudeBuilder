@@ -184,6 +184,18 @@ export function needsAiFallback(extracted: ExtractedForeclosureNotice): boolean 
  * Four of the 17 (117635, 117648, 117651, 117701) have no dollar amount
  * anywhere in the document at all -- genuinely not stated, left null
  * rather than guessed.
+ *
+ * A sixth pattern was added after the 2026-08-09 bounded 50-notice batch's
+ * pre-scale audit: 24 of that batch's 31 missing-principal cases (a
+ * recurring "ALAYNE CAVAZOS" trustee template, e.g. HID-117973/117967/
+ * 117982/117964) all state the amount as "Note[:] <words spelling out the
+ * amount> [AND] NO/100THS DOLLARS ($X,XXX.XX)" -- no "principal" label at
+ * all, and the spelled-out words plus the "NO/100THS" suffix both carry
+ * enough real-world OCR noise (missing colon, missing digits in "100",
+ * inconsistent line wrapping) that matching the words themselves isn't
+ * reliable. Anchoring on the stable "Note" + "DOLLARS ($...)" bracketing
+ * instead -- bounded to a short lookahead so this can't run away across
+ * an unrelated, later dollar mention in the same document.
  */
 function matchOriginalPrincipal(text: string): RegExpMatchArray | null {
   return (
@@ -191,7 +203,8 @@ function matchOriginalPrincipal(text: string): RegExpMatchArray | null {
     text.match(/original(?:\s+[A-Za-z]\b)?\s+principal\s+amount\s+of\s*\$[\d,.]+/i) ??
     text.match(/Original Principal:?\s*\$[\d,.]+/i) ??
     text.match(/Deed of Trust Dated:?[^\n]*\n\s*Amount:?\s*\$[\d,.]+/i) ??
-    text.match(/Note\s+dated\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}\s+in the amount of\s*\$[\d,.]+/i)
+    text.match(/Note\s+dated\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}\s+in the amount of\s*\$[\d,.]+/i) ??
+    text.match(/Note:?\s*[\s\S]{0,120}?DOLLARS\s*\(\$[\d,.]+\)/i)
   );
 }
 

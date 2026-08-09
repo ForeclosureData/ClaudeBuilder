@@ -668,4 +668,45 @@ Date of Sale: September 1, 2026`;
     expect(result.originalPrincipalAmount.value).toBeNull();
     expect(result.originalPrincipalAmount.confidence).toBe(0);
   });
+
+  // Confirmed against the real 50-notice bounded-batch pre-scale audit
+  // (2026-08-09): 24 of 31 missing-principal cases share this "Note[:]
+  // <spelled-out amount> DOLLARS ($X,XXX.XX)" trustee-template phrasing --
+  // no "principal" label anywhere in the document at all.
+  it("matches 'Note: <words> DOLLARS ($X)' with no 'principal' label present", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Date: July 7, 2026
+Substitute Trustee: SAMPLE TRUSTEE
+Lender: SAMPLE LENDER, L.P., A TEXAS LIMITED PARTNERSHIP
+Note: SIXTY-FIVE THOUSAND SEVEN HUNDRED FIFTY AND
+NO/100THS DOLLARS ($65,750.00)
+
+Deed of Trust
+Date: August 20, 2025
+Grantor: SAMPLE BORROWER`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(65750);
+    expect(result.originalPrincipalAmount.explicitlyStated).toBe(true);
+  });
+
+  it("matches the same 'Note ... DOLLARS ($X)' phrasing with the colon and a digit in 'NO/100THS' dropped by OCR", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Lender: SAMPLE LENDER, LP, A TEXAS LIMITED PARTNERSHIP
+Note FIFTY-FOUR THOUSAND ONE HUNDRED AND
+NO/00THS DOLLARS ($54,100.00)
+Deed of Trust
+Date: September 5, 2025`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(54100);
+  });
+
+  it("does not let the 'Note ... DOLLARS ($X)' pattern reach across an unrelated, distant dollar-in-parens mention", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Note regarding trustee substitution: the undersigned as attorney for Mortgagee or Mortgage Servicer does hereby
+remove the original Trustee and all successor substitute trustees and appoints in their stead a new Substitute
+Trustee, who shall hereafter exercise all powers and duties set aside to the said original trustee under the Deed
+of Trust, and is separately owed a flat administrative fee in United States DOLLARS ($45.00) for this filing.`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBeNull();
+  });
 });

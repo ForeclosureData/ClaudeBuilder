@@ -10,7 +10,7 @@ import { EmptyState } from "@/components/properties/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/table";
-import { formatCurrencyCents, formatDate, daysUntil } from "@/lib/utils";
+import { formatCurrencyCents, formatDate, daysUntil, formatBorrowerName } from "@/lib/utils";
 import { saleStatusLabels } from "@foreclosuredata/config";
 
 export const dynamic = "force-dynamic";
@@ -111,7 +111,7 @@ export default async function PropertiesPage({ searchParams }: { searchParams: R
                     <div className="text-xs text-neutral-500">{fc.property?.city}, {fc.county.name} County</div>
                   </Td>
                   <Td>{fc.property?.propertyType ?? "UNKNOWN"}</Td>
-                  <Td>{unlocked ? fc.borrower?.fullName ?? "Unknown" : <LockedCell />}</Td>
+                  <Td>{unlocked ? formatBorrowerName(fc.borrower?.fullName) : <LockedCell />}</Td>
                   <Td>{unlocked ? fc.loan?.currentMortgagee?.name ?? fc.loan?.originalLender?.name ?? "Unknown" : <LockedCell />}</Td>
                   <Td>{unlocked ? formatCurrencyCents(fc.loan?.originalPrincipalAmountCents ?? null) : <LockedCell />}</Td>
                   <Td><Badge tone={fc.status === "CANCELED" ? "danger" : fc.status === "SOLD" ? "neutral" : "success"}>{saleStatusLabels[fc.status]}</Badge></Td>
