@@ -159,12 +159,38 @@ function validateFieldsIndependently(rawInput: Record<string, unknown>): {
     }
 
     const value = validated.data as ExtractedValue<unknown>;
+    if (Array.isArray(value.value) && (field === "borrowerNames" || field === "grantorNames" || field === "substituteTrustee")) {
+      value.value = mergeDanglingNameSuffixes(value.value as string[]);
+    }
     const hadValue = value.value !== null && !(Array.isArray(value.value) && value.value.length === 0);
     fieldOutcomes.push({ field, status: "accepted", hadValue });
     (result[field] as ExtractedValue<unknown>) = value;
   }
 
   return { result, fieldOutcomes };
+}
+
+/**
+ * A real observed defect (HID-117707, extraction repair verification run):
+ * the model split "Ricardo Ruiz, Jr., a single person" into two array
+ * entries, ["Ricardo Ruiz", "Jr."], reading the suffix as if it were a
+ * second borrower. "Jr."/"Sr."/a bare roman numeral is never a person on
+ * its own -- when one appears as its own array entry, it's reattached to
+ * the name immediately before it rather than kept as a phantom co-borrower.
+ */
+const NAME_SUFFIX_ONLY = /^(Jr\.?|Sr\.?|I{1,3}|IV|V)$/i;
+
+function mergeDanglingNameSuffixes(names: string[]): string[] {
+  const merged: string[] = [];
+  for (const name of names) {
+    const trimmed = name.trim();
+    if (NAME_SUFFIX_ONLY.test(trimmed) && merged.length > 0) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]}, ${trimmed}`;
+    } else {
+      merged.push(name);
+    }
+  }
+  return merged;
 }
 
 /** Rough published per-token pricing; update if the configured model's pricing changes. */

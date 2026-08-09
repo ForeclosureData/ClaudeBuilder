@@ -101,6 +101,30 @@ describe("extractWithAI", () => {
     expect(outcome.result?.borrowerNames.value).toEqual(["JOHN DOE", "JANE DOE"]);
   });
 
+  it("reattaches a dangling name-suffix entry (e.g. 'Jr.') to the preceding borrower instead of treating it as a second person (real HID-117707 defect)", async () => {
+    const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
+    const response = fullBlankResponse();
+    response.borrowerNames = { value: ["Ricardo Ruiz", "Jr."], explicitlyStated: true, confidence: 0.9, supportingText: "Grantor: Ricardo Ruiz, Jr., a single person", pageNumber: 1 };
+    response.grantorNames = { value: ["Ricardo Ruiz", "Jr."], explicitlyStated: true, confidence: 0.9, supportingText: "Grantor: Ricardo Ruiz, Jr., a single person", pageNumber: 1 };
+    mockToolResponse(response);
+
+    const outcome = await extractWithAI("notice text", budget, { apiKey: "test-key" });
+
+    expect(outcome.result?.borrowerNames.value).toEqual(["Ricardo Ruiz, Jr."]);
+    expect(outcome.result?.grantorNames.value).toEqual(["Ricardo Ruiz, Jr."]);
+  });
+
+  it("leaves multiple real borrowers alone when no suffix token is present", async () => {
+    const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
+    const response = fullBlankResponse();
+    response.borrowerNames = { value: ["JOHN DOE", "JANE DOE"], explicitlyStated: true, confidence: 0.9, supportingText: "x", pageNumber: 1 };
+    mockToolResponse(response);
+
+    const outcome = await extractWithAI("notice text", budget, { apiKey: "test-key" });
+
+    expect(outcome.result?.borrowerNames.value).toEqual(["JOHN DOE", "JANE DOE"]);
+  });
+
   it("system prompt and tool schema explicitly disambiguate Trustor/Grantor/Mortgagor terminology from lender-side parties", () => {
     expect(AI_EXTRACTION_SYSTEM_PROMPT).toMatch(/Trustor/i);
     expect(AI_EXTRACTION_SYSTEM_PROMPT).toMatch(/Mortgagor/i);
