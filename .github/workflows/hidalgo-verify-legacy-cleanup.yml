@@ -1,0 +1,49 @@
+name: Hidalgo Legacy Cleanup Verification
+
+# Read-only post-execution verification for the live legacy-duplicate
+# cleanup (ci-cleanup-legacy-duplicates.mts, DRY_RUN=false). Confirms the
+# borrower backfill, archive/mergedIntoCaseId links, public-surface
+# exclusion, untouched-row check, and final case counts, then runs the
+# project's test suites. Zero database writes, zero Anthropic calls.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify legacy cleanup (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run verify:hidalgo-legacy-cleanup:ci
+
+      - name: Run foreclosure-core test suite
+        run: pnpm --filter @foreclosuredata/foreclosure-core test
+
+      - name: Run web test suite
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web test
