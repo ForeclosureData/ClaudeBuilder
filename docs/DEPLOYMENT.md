@@ -1046,6 +1046,192 @@ and scheduling remains OFF. This effort stops here and awaits explicit
 approval before any further ingestion, the AI-fallback fix, or a
 scheduling change.**
 
+## Extraction/AI-fallback repair (2026-08-09)
+
+Targeted repair of the extraction gap the fresh-25-notice test found,
+verified against **only** the same 25 already-ingested notices (their
+stored `SourceDocument.rawText` -- no re-ingestion) via a bounded GitHub
+Actions run
+([final confirmation: run 31293239146](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31293239146)),
+capped at the same 9 AI-fallback calls the original run needed.
+
+### 1. Root cause (not a guess -- read from the actual code path)
+
+`extractWithAI.ts`'s Anthropic call was a **plain-text completion**: the
+user turn was just the raw notice text, and the system prompt narrated
+guidance for 6 of the 18 schema fields by name (`originalMortgagee`,
+`currentMortgagee`, `mortgageServicer`, `lenderName`,
+`currentPrincipalBalance`, `propertyAddress`) but never mentioned
+`borrowerNames`/`grantorNames` anywhere, and the actual JSON Schema was
+never included in the request at all. The model had no machine-readable
+list of required field names -- it reconstructed the response shape from
+prose alone, and reliably reproduced the 6 fields it was told about by
+name while omitting the 2 it was never told about. This fully explains
+the observed pattern: 9/9 failures, always missing exactly
+`borrowerNames`/`grantorNames`, never a different pair.
+
+### 2-3. Fix: tool-use with a real schema + terminology guidance
+
+- `extractWithAI.ts` now calls Anthropic with `tools`/`tool_choice`
+  (`extract_foreclosure_notice_fields`), giving the model the actual JSON
+  Schema (`AI_EXTRACTION_TOOL_INPUT_SCHEMA` in `schema.ts`, all 18 fields
+  listed in `required`) instead of prose alone.
+- The schema's per-field descriptions and the system prompt both now
+  explain that a Texas trustee's-sale notice calls the original
+  homeowner(s) "Borrower", "Grantor(s)", "Trustor(s)", "Mortgagor(s)", or
+  a combined "Grantor(s)/Mortgagor(s)" label -- sometimes only in
+  narrative prose ("the Deed of Trust executed by NAME") -- and
+  explicitly distinguishes them from the lender/original mortgagee,
+  current mortgagee/noteholder, mortgage servicer, substitute trustee,
+  attorney, and county clerk.
+- Explicit instruction: unknown is valid (`[]`/`null`), fabrication is
+  not, and every required key must be present -- never omitted.
+
+### 4. Original-principal fallback -- deterministic patterns extended, evidence-checked against the real sample first
+
+Per the constraint ("only add patterns supported by the actual 25-notice
+sample"), pulled the real stored `rawText` for all 25 notices before
+writing any new regex. Finding: the original two patterns require a
+*literal, single-space* "original principal amount of" -- **10 of the 17
+notices that fell through them actually had that exact phrase**, just
+with a PDF line-wrap in the middle (`"...the original\nprincipal amount
+of $X"` or `"...principal amount\nof $X"`), which the old patterns'
+hard-coded spaces couldn't cross. Relaxing to `\s+` recovers all 10 with
+no widening of what counts as a match. Three further real template
+variants, each confirmed against an actual notice in the sample:
+`"Original Principal: $X"` (no "Amount" word, HID-117659),
+`"Deed of Trust Dated: ...\nAmount: $X"` (a key-value template, HID-117700),
+and `"Note dated <date> in the amount of $X"` (narrative, no "principal"
+label at all, HID-117633). The remaining 4 (117635, 117648, 117651,
+117701) have **zero dollar amounts anywhere in the document** -- correctly
+left `null`, not guessed. Also added a floor (`< $1,000` is discarded, not
+trusted) after finding a real OCR artifact (`"$216 015 00"` instead of
+`"$216,015.00"`) that would otherwise have parsed to a fabricated-looking
+`$216.00`.
+
+### 5. Field-level partial validation
+
+`extractWithAI.ts` now validates each of the 18 returned fields
+independently against its own Zod schema (`validateFieldsIndependently`)
+instead of one `safeParse` on the whole object. A field that's missing or
+malformed is recorded as `omitted`/`rejected_invalid` and left blank
+(never merged) -- it no longer discards four other fields the model got
+right. Nothing here fabricates: rejected/omitted fields become the same
+blank placeholder the deterministic layer already uses for "unknown."
+
+### 6. AI cost/yield instrumentation
+
+`AiExtractionOutcome` now carries `fieldOutcomes` (per-field
+accepted/rejected/omitted + reason), `inputTokens`/`outputTokens`, and the
+pipeline result exposes them (`aiFieldOutcomes`, `aiInputTokens`,
+`aiOutputTokens`). `usedAiFallback` is only set `true` when at least one
+field was actually recovered with a value -- a schema-valid-but-empty
+response no longer counts as a "successful" fallback.
+
+### 7. Tests
+
+22 new regression tests: 13 in `extractWithAI.test.ts` (borrowerNames
+present/empty, grantorNames empty, null scalar, multiple borrowers,
+terminology present in the prompt/schema, malformed field doesn't
+invalidate the rest, omitted key handling, partial-valid response,
+no-fabrication-on-total-failure, suffix-splitting fix, token/cost
+instrumentation) and 9 in `deterministicExtraction.test.ts` (each new
+principal pattern, the OCR-floor guard, the no-amount-stated null case,
+the suffix-splitting fix), using sanitized examples derived from the
+actual observed structures (placeholder names, real phrasing). Full suite:
+**220/220 passing**.
+
+### 8. Re-run report -- same 25 records, before vs. after
+
+| Metric | Before | After |
+|---|---|---|
+| Borrower/grantor extracted | 16/25 (64%) | **24/25 (96%)** |
+| Original principal extracted | 8/25 (32%) | **21/25 (84%)** |
+| Sale date extracted | 20/25 (80%) | **23/25 (92%)** |
+| Legal description extracted | 20/25 (80%) | **24/25 (96%)** |
+| AI calls attempted | 9 | 9 (unchanged -- same bound) |
+| AI calls schema-valid | 0/9 (0%) | **9/9 (100%)** |
+| AI calls with ≥1 useful field | 0/9 (0%) | **9/9 (100%)** |
+| Total AI-recovered fields | 0 | **127** |
+| AI spend | $0.45 | $0.59 |
+| Cost per useful AI call | n/a (0 useful) | **$0.0656** |
+
+The 4 notices with no principal anywhere in the text (117635, 117648,
+117651, 117701) correctly stayed `null` throughout -- not a regression,
+the fix's own "unknown is valid" guarantee holding.
+
+**Investor completeness, recomputed** (lender explicitly not required for
+FULLY USEFUL, per the stated definition -- usable address + sale date +
+source notice + borrower + principal, plus valuation only when a CAD
+parcel is confirmed):
+
+| Classification | Before | After |
+|---|---|---|
+| FULLY USEFUL | 0 (0%) | **10 (40%)** |
+| USEFUL | 14 (56%) | 5 (20%) |
+| LIMITED | 11 (44%) | 10 (40%) |
+
+LIMITED barely moved (11→10) because 8 of the 10 remaining LIMITED cases
+have no address at all in the notice or CAD -- a property-resolution gap,
+untouched by this task, not an extraction one. The one LIMITED→USEFUL
+move (HID-117701) is the AI recovering a sale date that deterministic
+extraction missed.
+
+### 9. Manual verification of every AI-recovered borrower/principal (100%, not a sample)
+
+| Filing # | AI-recovered borrower(s) | Verdict | AI-recovered principal | Verdict |
+|---|---|---|---|---|
+| 117634 | Damian Davila | CONFIRMED CORRECT | $176,641.00 | CONFIRMED CORRECT |
+| 117643 | Robert Anthony Cummings, Francisca Cannata | CONFIRMED CORRECT | $234,671.00 | CONFIRMED CORRECT |
+| 117651 | Ediberto Reyes, Jr. | CONFIRMED CORRECT | *(none -- correctly null)* | CONFIRMED CORRECT |
+| 117658 | Ismael E. Badillo | CONFIRMED CORRECT | $218,960.00 | CONFIRMED CORRECT |
+| 117660 | Gerardo Guerrero Diaz | CONFIRMED CORRECT | $179,390.00 | CONFIRMED CORRECT |
+| 117697 | Eduardo Castellanos | CONFIRMED CORRECT | $216,015.00 | **LIKELY CORRECT** -- source text is OCR-mangled ("$216 015 00", no commas/decimal); the AI's reconstruction is the only sensible reading, but noted as inference rather than a verbatim match |
+| 117698 | Pedro Champion, Estela Champion | CONFIRMED CORRECT | $65,550.00 | CONFIRMED CORRECT |
+| 117701 | Ruben Rodriguez Cavazos | CONFIRMED CORRECT (source table has it as "CAVAZOS, RUBEN RODRIGUEZ" -- correctly reordered, no fabrication) | *(none -- correctly null)* | CONFIRMED CORRECT |
+| 117707 | Ricardo Ruiz, Jr. | CONFIRMED CORRECT (see defect below) | $173,500.00 | CONFIRMED CORRECT |
+
+**One defect found and fixed during this verification, not before**: the
+first confirmation run showed HID-117707 as `["Ricardo Ruiz", "Jr."]` --
+the model (and, as it turned out, the *deterministic* comma-splitter too)
+read the suffix as a second borrower. Traced to the actual cause:
+`texasTemplates.ts`'s `splitNames()` already produces this split with
+high confidence, so the pipeline's merge never lets the AI's own
+(separately correct) value override it -- fixing only the AI side left it
+wrong. Fixed at the shared root (`nameSuffixes.ts`, used by both the
+deterministic splitter and the AI field validator) and reconfirmed with a
+second real run: now `["Ricardo Ruiz, Jr."]`. **Zero fabrications found
+across all 9 cases** -- every AI-recovered value traces to real text in
+the notice; the one defect was a mis-split of real text, not an invented
+value, and it's now closed.
+
+### 10. Final recommendation
+
+**A. EXTRACTION FIX PASSED -- READY FOR NEXT NEW HIDALGO BATCH.**
+
+The AI-fallback path went from 0/9 useful (100% failure, $0.45 wasted) to
+9/9 useful (127 fields recovered, zero fabrications, one defect found and
+closed during verification) for $0.59. Deterministic principal extraction
+alone -- no AI spend -- improved from 32% to 80% via evidence-backed
+pattern fixes. Every AI-recovered value was manually checked against
+source text; nothing was invented. The residual gaps (LIMITED cases with
+no address anywhere, lender extraction, the `needsAiFallback` trigger
+occasionally missing a single weak field like HID-117661's borrower name)
+are real but are property-resolution/trigger-tuning items, not this
+task's extraction/AI-fallback scope, and are called out here rather than
+hidden.
+
+**No production data was modified by this task.** The before/after
+numbers above are computed in-memory against the 25 records' existing
+`rawText` and were never written back onto the live
+`ForeclosureCase`/`Loan`/`Person` rows -- backfilling the 25 already-
+ingested records with the corrected extraction is a distinct, separately-
+approvable follow-up, not assumed here. **Per the approved scope, the
+remaining ~175 notices are NOT processed and scheduling remains OFF. This
+effort stops here and awaits explicit approval before any further
+ingestion, a backfill of the 25 existing records, or a scheduling
+change.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
