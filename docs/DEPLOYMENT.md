@@ -1560,6 +1560,329 @@ processed and scheduling remains OFF. This effort stops here and awaits
 explicit approval before any further ingestion, the next targeted fix,
 or a scheduling change.**
 
+## Fix round 3: HID-117888/HID-117914 targeted fixes + content-duplicate detection layer (2026-08-09)
+
+Scope, as explicitly approved: fix the three narrow issue classes surfaced
+by the second fresh-25 batch and nothing else. No additional notices
+ingested, no scheduling enabled, no new county, no property-resolution
+threshold changes, no CAD-matching changes.
+
+### 1. HID-117888 — unseen narrative template (total 0/18-field failure)
+
+**Diagnosis.** A live diagnostic call (identical system prompt, tool
+schema, model, and input as production) against the stored `rawText`
+produced a PERFECT 18/18-field response on the very first retry, with no
+code changes. No reproducible schema/validation bug was found in the AI
+path — the original production failure was almost certainly a one-off
+malformed sampling on that specific call, not a defect. The real,
+reproducible gaps were all on the deterministic side: this notice uses a
+narrative template none of the existing patterns recognized —
+`"...executed by NAME(S) ... ("Mortgagor")"` (role stated in a trailing
+parenthetical, not a fixed terminator phrase or label), `"for the benefit
+of NAME ("Mortgagee")"` (no MERS clause, no `"Original Mortgagee:"`
+label), `"to sell on <Weekday>, <Month> <Day>, <Year>"` (no `"Date of
+Sale:"`/`"Sale Information:"` label), and a legal description whose OCR
+page wraps with a blank line between every visual line (`"...out of
+Blocks\n\nSixty-one (61)..."`), which the existing 200-char single-line
+budget truncated at the very first line.
+
+**Fix.**
+- New 4th grantor-name candidate pattern (`executedByParenRole`) in
+  `extractGrantorNames()`.
+- New "for the benefit of" candidate in `extractOriginalMortgagee()`.
+- New `"to sell on"` saleDate fallback pattern.
+- `findLotBlockSentence()`'s trailing span widened from 200 chars/no
+  newlines to 500 chars tolerating embedded single newlines, but stopping
+  at unambiguous boundaries: 3+ consecutive newlines, a page-number-only
+  line, or the start of another known field's label (`"Date of Sale"`,
+  `"Time of Sale"`, `"Place of Sale"`, `"Substitute Trustee"`, `"Original
+  Principal"`) — the label-stop list was added after the wider budget
+  alone caused a **real regression** on a different real notice
+  (HID-117914, caught during verification — see below).
+- `cleanName()` now strips a stray mid-name OCR colon (`"...MUNOZ
+  :\nVARGAS..."`).
+- `splitNames()` now splits `", AND "` as one delimiter instead of a bare
+  comma, which previously stranded `"AND "` as a literal prefix on the
+  next name (the comma consumed the whitespace `"\s+AND\s+"` needed to
+  match).
+- `extractWithAI()` gets one bounded retry (2 attempts total) specifically
+  when a response is a TOTAL failure (every one of 18 fields
+  omitted/rejected, or no usable tool call at all) — justified by the live
+  diagnostic evidence above. A response with at least one valid field
+  never retries.
+
+**Before → after (real production data, `FIX_ROUND_3_DRY_RUN=false` run):**
+
+| Field | Before | After |
+|---|---|---|
+| borrowerNames | `null` (stored: `"Unknown owner"` placeholder) | `["LORRAINE RODRIGUEZ", "OLIVIA MUNOZ VARGAS A/K/A OLIVIA M. VARGAS"]` |
+| lenderName / originalMortgagee / currentMortgagee | `null` | `"21ST MORTGAGE CORPORATION"` (AI self-corrected the OCR-garbled `"215\""` → `"21ST"`) |
+| originalPrincipalAmount | `null` | `null` (correctly — no dollar amount is stated anywhere in this notice; confirmed by direct text inspection, not a bug) |
+| deedOfTrustDate | `2024-10-18` | unchanged (already correct) |
+| instrumentNumber | `3591492` | unchanged (already correct) |
+| legalDescription | truncated: `"...out of Blocks"` | full: `"...out of Blocks Sixty-one (61) and Sixty-Two (62), La Blanca "B" Subdividion, ...Official Records, Hidalgo County, Texas."` |
+| saleDate / saleTime / saleLocation | `null` / `null` / `null` | `2026-08-04` / `10:00 a.m.` / `"Hidalgo County Courthouse, at the place designated by the Commissioner's Court..."` |
+
+Manually verified every recovered value against the source text directly
+— all correct. 5 field changes applied (borrowerNames, legalDescription,
+sale date/time/location, originalMortgagee, currentMortgagee), each a
+genuine gap-fill or a demonstrable-truncation repair (old value is a
+literal prefix of the new one) — never an overwrite of a plausible
+existing value. AI cost: $0.07 (one call, no retry needed on this
+re-run).
+
+### 2. HID-117914 — borrower name truncated at a line-wrapped middle initial
+
+**Diagnosis.** `"Original Mortgagor/Grantor: CHRISTOPHER D.\nMUNIZ AND
+MAYRA C. MARTINEZ"` — the label-plus-same-line grantor pattern
+(`[^\n]+`-bounded) stopped dead at the line wrap, reporting the complete
+borrower as `"CHRISTOPHER D"` (confirmed as the literal stored value) —
+silently dropping the surname and the entire second co-borrower.
+
+**Fix.** New shared `mergeLineWrappedNameContinuation()` helper
+(`nameLineWrap.ts`), used by both the same-line and
+label-alone-on-its-own-line grantor capture paths in
+`extractGrantorNames()`. Deliberately narrow — only merges the next line
+when there's real evidence of a continuation, never blindly:
+1. captured text must end in a BARE, standalone middle initial (one
+   capital letter + period, preceded by whitespace/start — `"JR."`/
+   `"INC."` don't qualify, since those are two-letter tokens);
+2. the next line must not itself look like a new label (no colon in its
+   first ~40 chars);
+3. must not look like an address (doesn't start with a digit);
+4. must start with a capitalized word.
+
+Regression tests cover all 5 required scenarios: middle-initial + surname
+continuation, multiple borrowers, a real suffix (Jr./Sr./II/III) that must
+NOT trigger a merge, a next-line label that must NOT merge, a next-line
+address that must NOT merge, and an OCR punctuation variant (no trailing
+period) that correctly doesn't trigger the pattern at all.
+
+**Before → after:**
+
+| Field | Before | After |
+|---|---|---|
+| borrowerNames | `"CHRISTOPHER D"` (stored, truncated) | `["CHRISTOPHER D. MUNIZ", "MAYRA C. MARTINEZ"]` |
+| legalDescription | truncated: `"LOT 72, TAURUS ESTATES NO. 9, PHASE 111, FILED IN PLAT BOOK 41, PAGE 127-128."` | full: `"...BY FEE SIMPLE DEED FROM OBRA HOMES, INC. AS SET FORTH IN DEED DOC # 1267796, DATED 11/13/2003 AND RECORDED 11/18/2003, HIDALGO COUNTY RECORDS. STATE OF TEXAS."` |
+| lender fields, principal, dates, sale date/time | already correct | unchanged |
+
+Manually verified against source text — correct. Only 2 field changes
+applied (both truncation repairs — old value is a literal prefix of the
+corrected one). `saleLocation` is *also* truncated on this notice
+(`"...OUTDOOR COVERED AREA ON THE WEST SIDE OF THE"`, cut mid-sentence) —
+a different regex (`saleLocationMatch` in `texasTemplates.ts`, not
+`legalDescription.ts`) with the same class of bug, but **out of scope**
+for this round (not one of the three approved issue classes) and left
+untouched; flagged here as a residual finding for a future round.
+
+**A real regression caught during verification, not shipped:** the
+`findLotBlockSentence()` character-budget widening built for HID-117888,
+tested in isolation, over-consumed into HID-117914's sale-date/location
+clauses (no blank line separates the legal description from `"Date of
+Sale:"` in that notice's key-value template). Caught by re-running the
+fix against all 50 real notices from both fresh-25 batches before
+shipping (not just the 4 target records) — fixed by adding explicit
+field-label stop terms (above), then re-verified clean across all 50.
+
+### 3-4. Content/economic duplicate-detection layer + event-identity strategy
+
+**The problem.** HID-117729 and HID-117731 are the same real-world
+foreclosure notice, filed under two different Hidalgo County clerk
+document numbers. The existing `(countyId, countyFilingNumber)` identity
+rule is working exactly as designed here — both filing numbers are real
+and distinct — so it correctly does NOT collapse them, and shouldn't.
+What's missing is a *separate* signal for "these are two real, distinct
+source records that likely describe one underlying event."
+
+**Design principle (why a single matching field is never enough).** An
+address match alone, or a borrower-name match alone, or a lender match
+alone can all occur completely legitimately between genuinely distinct
+events: a first lien and a second lien on the same property; an HOA
+assessment-lien foreclosure and a mortgage foreclosure on the same
+property (same address, often the same owner, but different lender,
+principal, and instrument); the same borrower foreclosed on two different
+properties; the same national lender foreclosing on many unrelated
+properties. Collapsing on one field would produce false positives on all
+of these. The engine (`scoreDuplicateEvidence()`,
+`packages/foreclosure-core/src/duplicateDetection/scoring.ts`) requires
+**multiple independent fields** to agree, with two escape hatches on
+either side:
+- **Decisive signals** (either alone reaches `CONFIRMED_SAME_EVENT`): a
+  shared trustee/servicer tracking number embedded in the raw notice text
+  (e.g. `"T.S. #: 2025-20182-TX"`, matched by shape rather than the
+  wildly OCR-variable label text around it), or a near-identical raw-text
+  fingerprint (word-bigram Dice coefficient ≥ 0.90) — either one
+  implies the rest of the document, including every other field, is the
+  same source.
+- **Critical conflicts** (block any classification regardless of other
+  matches): a conflicting property address or a conflicting legal
+  description — decisive proof of a physically distinct property/event.
+- **The loan-identity gate**: reaching `LIKELY_SAME_EVENT` (without a
+  decisive signal) requires ≥4 independently-matching fields **and** at
+  least one of them must be a field that identifies the *loan* itself
+  (lender name, original principal, deed-of-trust date) — not just the
+  *property* (address, legal description, borrower names, sale date all
+  matching only proves "same property, roughly the same time," which is
+  exactly the shape of evidence a first lien and a second lien on the
+  same property would also share). This gate was added after a
+  regression test for that exact same-property-different-lien scenario
+  failed against the design's first draft — confirmed necessary, not
+  theoretical.
+- `POSSIBLE_DUPLICATE` (≥2 matching fields, no critical conflict) is the
+  floor — thin evidence worth a human look, never auto-acted on.
+
+**Schema (additive only — new enums + model + relations, nothing
+removed, no column renamed).** `NoticeDuplicateConfidence`
+(`CONFIRMED_SAME_EVENT` / `LIKELY_SAME_EVENT` / `POSSIBLE_DUPLICATE`),
+`NoticeDuplicateLinkStatus` (`OPEN` / `CONFIRMED_DUPLICATE` /
+`REJECTED_DISTINCT`), and `PossibleDuplicateNoticeLink` (caseA/caseB FKs
++ score + matched/conflicting fields + explanation + review state).
+`ForeclosureCase.archivedAt`/`mergedIntoCaseId` (the existing mechanism
+for a literal duplicate *re-ingestion of the same filing number*) is
+**untouched** — this is a deliberately separate, non-destructive
+mechanism. Confirming a link here never merges, archives, or changes
+either case's `countyFilingNumber`.
+
+**Admin review** (`/admin/duplicate-notices`, new page): lists every
+`OPEN` link side-by-side with both cases' address/owner/principal/sale
+date and a direct link to each original notice, with matched/conflicting
+fields and the engine's explanation shown, and "Confirm same event" /
+"Reject — distinct events" actions that only update the link's review
+state.
+
+**Amendments/reposts and true event-duplicates aren't conflated.** A
+regression test confirms an amended/reposted notice (same lender,
+principal, and deed-of-trust date, but a genuinely different sale date,
+and no decisive signal) still reaches `LIKELY_SAME_EVENT` rather than
+being penalized to invisibility by the date difference alone — a sale
+date conflict is a soft signal, not a blocker, since rescheduling doesn't
+change which underlying loan the notice is about.
+
+**Real result for HID-117729/HID-117731** (computed against live
+production data): `CONFIRMED_SAME_EVENT`, score 1.0, matched all 9
+possible fields (`trusteeSaleTrackingNumber`, `rawTextFingerprint`,
+`propertyAddress`, `legalDescription`, `borrowerNames`,
+`originalPrincipalAmount`, `deedOfTrustDate`, `saleDate`, `lenderName`),
+zero conflicts — as strong a signal as this design can produce short of
+a byte-identical file.
+
+### 5. Re-evaluation of the 4 affected records (stored `rawText` only, no re-ingestion)
+
+Ran via a bounded, secret-gated GH Actions script
+(`fix-round-3-reeval.mts`) touching only these 4 records — dry-run first,
+then a real write. Full before/after tables are in sections 1-2 and 3-4
+above; summary:
+
+| Record | Result |
+|---|---|
+| HID-117888 | 5 fields backfilled (gap-fill/truncation-repair only), verified correct |
+| HID-117914 | 2 fields backfilled (truncation-repair only), verified correct |
+| HID-117729/HID-117731 | Classified `CONFIRMED_SAME_EVENT` — **not** merged, **not** archived, filing numbers unchanged |
+
+**One real infrastructure blocker, reported rather than worked around:**
+the `PossibleDuplicateNoticeLink` table could not be created in
+production. `prisma db push` against this repo's `DATABASE_URL`/
+`DIRECT_URL` GitHub secrets fails consistently with `FATAL: (ENOTFOUND)
+tenant/user postgres.xxxxx not found` — both secrets resolve to
+Supabase's connection *pooler* (`aws-0-us-east-1.pooler.supabase.com:6543`),
+and `prisma db push` (schema DDL) needs a true non-pooled/session-mode
+connection, which pgbouncer's transaction-pooling mode rejects. This is a
+pre-existing secrets/infra configuration gap, not a code defect — every
+other script in this project only runs ordinary queries through the
+pooler, which works fine; this is the first operation in the project that
+needed real schema DDL from GitHub Actions. **Fix requires an admin to
+set the `DIRECT_URL` secret to Supabase's actual direct/session-mode
+connection string** (typically `db.<project-ref>.supabase.co:5432` or the
+pooler's port-5432 session-mode variant). Until then: the detection
+engine, admin UI, and write-path code are complete and tested (verified
+against real production data, computing the correct `CONFIRMED_SAME_EVENT`
+result for 117729/117731 with zero errors) — only the one `INSERT` is
+blocked. The write path was defensively isolated (try/catch + `continue-
+on-error`) so this single blocked table never prevented the HID-117888/
+HID-117914 backfills, which don't depend on it, from completing.
+
+### 6. Coverage concepts — five different numbers, not one
+
+The 282-vs-283 comparison against other sources only makes sense once
+these are kept separate:
+
+| Concept | What it counts | Current Hidalgo value |
+|---|---|---|
+| **County source notices detected** | Every notice the adapter has found on the county's site, regardless of ingestion state | 282 |
+| **Unique filing numbers (source records ingested)** | Distinct `(countyId, countyFilingNumber)` rows — the existing identity/dedup rule's unit | 132 |
+| **Unique foreclosure events** | Source records minus content-duplicates confirmed by the new layer (Section 3-4) | 131 *(132 minus 1 for the 117729/117731 pair, once its `PossibleDuplicateNoticeLink` is persisted and reviewer-confirmed)* |
+| **Unique physical properties** | Distinct resolved `Property` rows — can be lower than "unique events" (two liens, same property) or equal to it | not yet separately tracked; would require grouping resolved cases by `propertyId` |
+| **Published investor listings** | Cases that cleared publication thresholds (address/legal-description resolved, no blocking manual-review reason) | subset of "unique foreclosure events," not yet separately reported as its own number |
+
+**Worked example, using the one real duplicate pair found:** 132 source
+records were ingested, but HID-117729 and HID-117731 are one underlying
+event, so "unique foreclosure events" is 131, not 132 — and if either of
+those two cases hasn't cleared publication thresholds independently,
+"published investor listings" could differ from both numbers again. None
+of these five numbers collapse into each other, and none of this changes
+today's public-facing count — per the explicit instruction, that
+requires a separately reported and approved rule change, not a
+side-effect of this fix round. The proposal: publish "county source
+notices" and "unique filing numbers" as-is (they're already accurate,
+literal counts), but change any *investor-facing* "N foreclosures found"
+language to count `CONFIRMED_DUPLICATE`-reviewed pairs once, and label
+`POSSIBLE_DUPLICATE`/`LIKELY_SAME_EVENT` pairs (not yet reviewer-
+confirmed) as still counted separately until a human confirms — i.e.
+never silently under-count on unreviewed evidence, only on a human-
+confirmed link.
+
+### 7. Regression suite
+
+61 new tests (249 total in `foreclosure-core`, up from 188), across:
+- HID-117888's template class (4 tests: parenthetical-role borrower
+  pattern, `", AND "` split fix, OCR-colon strip, `"to sell on"` sale
+  date).
+- The legal-description line-wrap fix + its regression guard (4 tests:
+  spans a blank-line-per-line OCR page, stops at a page-number line,
+  stops at a genuine paragraph break, stops at a known field label even
+  with only a single newline — the exact HID-117914 regression).
+- Line-wrapped borrower names (5 tests: the five required scenarios —
+  middle-initial continuation with a second co-borrower, a real suffix
+  that must NOT merge, a next-line label that must NOT merge, a next-line
+  address that must NOT merge, an OCR punctuation variant).
+- The lender `"for the benefit of"` pattern (2 tests: recovers a clean
+  value, correctly abstains on an OCR-garbled one rather than fabricating).
+- `extractWithAI()`'s bounded retry (5 tests: retries and recovers on a
+  genuine total failure via either failure mode, does NOT retry when at
+  least one field is valid, sums cost/tokens across both attempts).
+- Content-duplicate detection (10 tests): the real 117729/117731 case
+  (sanitized), a same-property-different-lien case that must NOT reach
+  LIKELY/CONFIRMED, an amended/reposted notice that still reaches LIKELY
+  despite a differing sale date, a same-borrower-different-property case
+  that must NOT be flagged (address conflict is decisive), a thin-
+  evidence same-address-different-date case capped below LIKELY, two
+  fully-null cases never "matching," plus the raw-text-fingerprint helper
+  in isolation.
+
+All 249 tests pass; verified against all 50 real notices from both
+fresh-25 batches (not just the 4 target records) for regressions before
+shipping — zero anomalies found on the second pass, after fixing the one
+regression the first pass caught.
+
+### 8. Final recommendation
+
+**B. ONE MORE ITEM REQUIRED — but it's an infra secret, not a code fix.**
+
+All three approved issue classes are fixed, tested, and verified against
+real production data: HID-117888 and HID-117914 are backfilled and
+correct in production right now. The content-duplicate detection engine
+correctly classifies the real 117729/117731 pair as `CONFIRMED_SAME_EVENT`
+with zero conflicts and is fully wired (schema, engine, admin UI,
+write path) — the only remaining step is an admin correcting the
+`DIRECT_URL` GitHub secret so `prisma db push` can create the one new
+table, after which re-running `fix-round-3:reeval` (already idempotent —
+it upserts on `(caseAId, caseBId)`) will persist the link with no code
+changes needed.
+
+**Per the approved scope: no additional notices were processed, scheduling
+remains OFF. This effort stops here and awaits explicit approval before
+any further ingestion, the next targeted fix, or a scheduling change.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
