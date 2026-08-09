@@ -1997,6 +1997,165 @@ any further ingestion, a scheduling change, or acting on the
 changing public counting behavior) beyond what's already documented
 above as a proposed rule, not yet applied.**
 
+## Bounded 50-notice production batch (2026-08-09)
+
+Following the infra fix and DIRECT_URL correction above, a bounded batch
+of exactly 50 previously-un-ingested Hidalgo notices was run under a new
+`targetFilingNumbers` allowlist mechanism.
+
+### Pre-flight selection
+
+A new read-only script (`apps/web/scripts/ci-select-hidalgo-target.mts`,
+run via `.github/workflows/hidalgo-select-target.yml`) scans the bundle's
+cover-sheet barcodes only (no OCR, no Anthropic calls, no DB writes) to
+select an exact count of new filing numbers and prove zero overlap before
+any spend:
+
+- Current state before batch: 132 `ForeclosureCase` rows (82 legacy-seeded
+  + 50 previously pipeline-ingested), 50 distinct non-null
+  `countyFilingNumber` values.
+- Bundle: 282 notices, 50 already-ingested (via `countyFilingNumber`), 232
+  genuinely new by that check alone.
+- **Gap found and closed**: the 82 legacy-seeded cases predate the
+  `seed.ts` revision that populates `countyFilingNumber`, so a DB-only
+  check is blind to them. The script now also excludes every docNumber in
+  `hidalgo-real-cases.ts` directly from the source file. Selected 50
+  filing numbers (117932–117988 range) were verified to have zero overlap
+  against both the database and the legacy seed dataset.
+- Selection: 50 filing numbers, requiring a 100-notice split window
+  (`maxNoticesPerBundle=100`) to reach the last one in bundle-page order.
+
+### `targetFilingNumbers` allowlist
+
+`ingestForeclosureNotices()` gained an `options.targetFilingNumbers?:
+Set<string>` option: notices whose normalized filing number isn't in the
+set are skipped before any extraction/persistence/AI-fallback work,
+counted in a new `noticesSkippedNotInTarget` summary field. This is the
+mechanism that makes "process exactly N new notices, never more"
+enforceable — `maxNoticesPerBundle` alone can't guarantee it, since a
+bundle interleaves already-ingested duplicates with genuinely-new notices.
+Note this only gates the extraction/field-fallback/persistence stage —
+local OCR still runs for every notice in the split window (free), and a
+notice with low OCR confidence could in principle still trigger a
+Claude-vision content-transcription call before the target filter is
+reached; this run had 0 such fallbacks.
+
+### Run results
+
+GitHub Actions run, production mode, `maxBundles=1`,
+`maxNoticesPerBundle=100`, `maxAiFallbackCallsPerRun=50`,
+`maxAiCostPerRunUsd=4.00`, 50-filing-number target allowlist. Runtime
+1073.4s (~17.9 min).
+
+| Metric | Value |
+| --- | --- |
+| Notices split | 100 |
+| Notices skipped (not in target) | 50 |
+| Notices OCR'd successfully | 50/50 (avg confidence 92.6) |
+| Content Claude-vision fallbacks | 0 |
+| Field-extraction Claude fallback calls | 10 |
+| Anthropic cost | $0.66 ($0.0132/notice across all 50; $0.066/notice among the 10 AI-touched) |
+| Records created (new) | **50** |
+| Duplicates skipped | 0 |
+| Records sent to manual review | 39 (78%) |
+| Failures / errors | 0 |
+
+A transient Postgres connection drop (`terminating connection due to
+administrator command`, consistent with a Neon connection-pool recycle)
+occurred mid-run and self-healed with no observable effect — confirmed by
+the post-run integrity check below.
+
+### Extraction completeness (of 50)
+
+| Field | Complete |
+| --- | --- |
+| Borrower | 50/50 (100%) — **caveat**: 3 of these are the pipeline's existing `"Unknown owner"` fallback string (no name could be extracted at all), not real names |
+| Principal | 19/50 (38.0%) |
+| Sale date | 48/50 (96.0%) |
+| Legal description | 47/50 (94.0%) |
+| Usable address | 19/50 (38.0%) |
+| Lender | 50/50 (100%) |
+| Servicer | 13/50 (26.0%) |
+
+### Investor usefulness
+
+FULLY USEFUL: 8 (16.0%) · USEFUL: 37 (74.0%) · LIMITED: 5 (10.0%)
+
+### Property resolution
+
+CAD-confirmed parcels: 12 · Strong candidates awaiting approval: 34 ·
+No-match: 4 · Owner conflicts: 0 · Subdivision conflicts: 0 · Lot/block
+conflicts: 0 · Ambiguous holds: 7 · Total CAD candidate rows returned:
+657 · Average per case: 13.14 · Max per case: 102.
+
+Manual review reasons (39 cases, one case may have multiple):
+`NO_ADDRESS_RESOLVED` 31, `MULTIPLE_APPRAISAL_MATCHES` 7,
+`BORROWER_NAME_CONFLICT` 3, `SALE_DATE_CONFLICT` 2.
+
+### Valuation (of 19 cases with a resolved property)
+
+Market value: 12 · Appraised value: 12 · Land value: 12 · Improvement
+value: 12 · Tax year: all 2026.
+
+### Duplicate-event detection
+
+0 possible/likely/confirmed duplicate-event pairs found among the 50 —
+all 50 source notices map to 50 distinct, correctly-uncollapsed events.
+
+### Safety: manual verification
+
+**Every one of the 12 auto-attached CAD parcels was manually inspected**
+(owner name, situs address, and legal description cross-checked between
+the notice and the CAD candidate): **10 CONFIRMED CORRECT, 2 LIKELY
+CORRECT WITH MINOR DISCREPANCY** (117941: our borrower extraction
+captured only the first/middle name, missing the surname the CAD record
+supplies — address and legal description matched exactly; 117979: the
+notice's raw OCR'd legal text has an odd artifact ("Lot 51 & §2") but the
+parsed/matched fields agree with the CAD record). **0 AMBIGUOUS, 0
+INCORRECT.**
+
+All 50 borrower/principal values were also spot-checked for structurally
+unusual results; the only notable pattern is the pre-existing
+`"Unknown owner"` fallback (3 cases: 117932, 117933, 117959) — an
+intentional, existing code path (`ingestForeclosureNotices.ts:448`), not
+a new defect, triggered when no grantor/borrower name could be extracted
+from that particular notice's text at all.
+
+**Production integrity, re-verified after the run**: 182 `ForeclosureCase`
+rows (132 + 50, exact match), **0 duplicate `(countyId,
+countyFilingNumber)` groups**. No `ProcessingJob` scheduling was started.
+No duplicate ForeclosureCase rows were created — the STOP condition was
+never triggered.
+
+### Coverage accounting
+
+| Metric | Value |
+| --- | --- |
+| Total bundle notices | 282 |
+| Unique filing numbers ingested (cumulative, via pipeline) | 100 |
+| Unique foreclosure events detected (this batch) | 50 (0 collapsed) |
+| Notices remaining (bundle minus pipeline-ingested) | 182 |
+| Ingestion coverage (pipeline-tracked) | 100/282 = 35.5% |
+| CAD-confirmed parcel % (this batch) | 12/50 = 24.0% |
+| Investor-usable listing % (this batch, FULLY USEFUL + USEFUL) | 45/50 = 90.0% |
+
+### Final recommendation
+
+**A. 50-BATCH PASSED — READY TO PROCESS REMAINING HIDALGO NOTICES.**
+Exactly 50 new records created, 0 duplicates, 0 failures, 0 INCORRECT CAD
+parcels, production integrity confirmed stable. The completeness gaps
+(principal 38%, usable-address 38%, servicer 26%) and the 78%
+manual-review rate reflect this pipeline's existing, already-documented
+conservative behavior (e.g. CAD auto-accept stays deliberately narrow;
+notices without a parseable street address route to manual review rather
+than guessing) — not a new regression introduced by this batch.
+
+**Per the approved scope: the remainder was not processed, scheduling
+remains OFF, no other county was added, and no extraction/
+property-resolution logic was modified. This effort stops here and awaits
+explicit approval before processing any additional notices or changing
+scheduling.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
