@@ -244,30 +244,39 @@ async function scoreAndLinkDuplicatePair(filingA: string, filingB: string) {
   const sortedIds = [a.id, b.id].sort();
   const caseAId = sortedIds[0]!;
   const caseBId = sortedIds[1]!;
+  let linkWriteError: string | undefined;
   if (!DRY_RUN) {
-    await prisma.$transaction(async (tx) => {
-      const link = await tx.possibleDuplicateNoticeLink.upsert({
-        where: { caseAId_caseBId: { caseAId, caseBId } },
-        create: { caseAId, caseBId, confidence: result.confidence!, score: result.score, matchedFields: result.matchedFields, conflictingFields: result.conflictingFields, explanation: result.explanation },
-        update: { confidence: result.confidence!, score: result.score, matchedFields: result.matchedFields, conflictingFields: result.conflictingFields, explanation: result.explanation },
+    try {
+      await prisma.$transaction(async (tx) => {
+        const link = await tx.possibleDuplicateNoticeLink.upsert({
+          where: { caseAId_caseBId: { caseAId, caseBId } },
+          create: { caseAId, caseBId, confidence: result.confidence!, score: result.score, matchedFields: result.matchedFields, conflictingFields: result.conflictingFields, explanation: result.explanation },
+          update: { confidence: result.confidence!, score: result.score, matchedFields: result.matchedFields, conflictingFields: result.conflictingFields, explanation: result.explanation },
+        });
+        // ManualReviewTask has no natural unique key on (foreclosureCaseId, reason) -- guard against duplicate tasks across re-runs by checking first.
+        const existingTask = await tx.manualReviewTask.findFirst({ where: { foreclosureCaseId: caseBId, reason: "POSSIBLE_CONTENT_DUPLICATE" } });
+        if (!existingTask) {
+          await tx.manualReviewTask.create({ data: { foreclosureCaseId: caseBId, reason: "POSSIBLE_CONTENT_DUPLICATE", status: "OPEN", notes: `Possible duplicate of case ${caseAId} (${result.confidence}). ${result.explanation}` } });
+        }
+        await tx.auditLog.create({
+          data: {
+            action: "DUPLICATE_NOTICE_LINK_CREATED",
+            entityType: "PossibleDuplicateNoticeLink",
+            entityId: link.id,
+            afterJson: { filingA, filingB, confidence: result.confidence, score: result.score, matchedFields: result.matchedFields, conflictingFields: result.conflictingFields } as never,
+          },
+        });
       });
-      // ManualReviewTask has no natural unique key on (foreclosureCaseId, reason) -- guard against duplicate tasks across re-runs by checking first.
-      const existingTask = await tx.manualReviewTask.findFirst({ where: { foreclosureCaseId: caseBId, reason: "POSSIBLE_CONTENT_DUPLICATE" } });
-      if (!existingTask) {
-        await tx.manualReviewTask.create({ data: { foreclosureCaseId: caseBId, reason: "POSSIBLE_CONTENT_DUPLICATE", status: "OPEN", notes: `Possible duplicate of case ${caseAId} (${result.confidence}). ${result.explanation}` } });
-      }
-      await tx.auditLog.create({
-        data: {
-          action: "DUPLICATE_NOTICE_LINK_CREATED",
-          entityType: "PossibleDuplicateNoticeLink",
-          entityId: link.id,
-          afterJson: { filingA, filingB, confidence: result.confidence, score: result.score, matchedFields: result.matchedFields, conflictingFields: result.conflictingFields } as never,
-        },
-      });
-    });
+    } catch (err) {
+      // Isolated so a schema/table not being live yet (e.g. db:push not
+      // reachable from this environment) doesn't crash the rest of the
+      // run -- the 117888/117914 re-eval below only touches
+      // already-existing tables and must still complete and be reported.
+      linkWriteError = err instanceof Error ? err.message : String(err);
+    }
   }
 
-  return { filingA, filingB, caseAId: a.id, caseBId: b.id, evidence: result, linkCreated: true };
+  return { filingA, filingB, caseAId: a.id, caseBId: b.id, evidence: result, linkCreated: !DRY_RUN && !linkWriteError, linkWriteError };
 }
 
 async function main() {

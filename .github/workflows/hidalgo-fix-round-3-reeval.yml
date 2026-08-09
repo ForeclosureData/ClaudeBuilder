@@ -53,7 +53,13 @@ jobs:
       - name: Run foreclosure-core test suite
         run: pnpm --filter @foreclosuredata/foreclosure-core test
 
+      # Non-fatal: if the pooled DATABASE_URL/DIRECT_URL can't run DDL from
+      # this environment, the 117888/117914 re-eval below (existing tables
+      # only) must still run and be reported. The duplicate-link write for
+      # 117729/117731 is separately wrapped in a try/catch in the script
+      # and reports its own error rather than crashing the whole run.
       - name: Push new duplicate-detection schema (additive only -- new enums/model/relations, no column drops or renames)
+        continue-on-error: true
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DIRECT_URL: ${{ secrets.DIRECT_URL }}
