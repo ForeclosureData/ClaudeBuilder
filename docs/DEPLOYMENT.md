@@ -1232,6 +1232,106 @@ effort stops here and awaits explicit approval before any further
 ingestion, a backfill of the 25 existing records, or a scheduling
 change.**
 
+## Phase 1: Extraction backfill onto the same 25 fresh-test records (2026-08-09)
+
+Approved follow-up to the extraction repair: backfills the corrected
+extraction results onto the same 25 already-ingested records, using their
+existing `SourceDocument.rawText` -- no new `ForeclosureCase` rows, no new
+`SourceDocument` rows, notice identity (`countyId` + normalized
+`countyFilingNumber`) never touched.
+([Dry run](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31294171732),
+then [real write pass](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31294313416) --
+identical change sets, 0 suspicious skips in either.)
+
+**Safety model actually applied**: a field was only ever changed if the
+existing value was null/the ingestion-time `"Unknown owner"` placeholder
+(a real gap), or -- the one narrow exception -- if the existing original-
+principal value was below the $1,000 sanity floor (an OCR-corruption
+signature, not a real principal). A non-null, non-corrupted existing
+value was never touched, even when the new pipeline produced a different
+result. A 50x-ratio guard would have skipped-and-flagged any old/new
+principal disagreement that extreme rather than silently picking one;
+**this never triggered** -- 0 suspicious skips across all 25 records.
+
+### Results
+
+| | |
+|---|---|
+| Records with at least one field changed | 19 / 25 |
+| Records with zero changes (already correct/complete) | 6 / 25 |
+| Total field changes | 49 |
+| Currency-safety corrections (OCR-corrupted value replaced) | 1 (HID-117697: $216.00 -> $216,015.00) |
+| Suspicious skips (old/new differed >50x, left untouched) | 0 |
+| New `ForeclosureCase` rows created | 0 |
+| New `SourceDocument` rows created | 0 |
+| AuditLog entries written | 49 (one per field change, verified present in production) |
+
+Field-level breakdown of the 49 changes: 17 original-principal fills (16
+gap-fills + the 1 currency-safety correction), 8 borrower/grantor name
+fills, 3 new `ForeclosureSale` rows (previously-missing sale records), 4
+new `LegalDescription` rows, 8 instrument-number fills, 4 deed-of-trust-
+date fills, 2 recording-date fills, 3 lender/servicer fills.
+
+**Completeness after backfill** (25 records):
+
+| Field | Before | After |
+|---|---|---|
+| Borrower/grantor | 16/25 (64%) | **24/25 (96%)** |
+| Original principal | 8/25 (32%) | **21/25 (84%)** |
+| Lender/mortgagee | 25/25 (100%) | 25/25 (100%, unchanged) |
+| Mortgage servicer | 17/25 (68%) | **20/25 (80%)** |
+| Sale date | 20/25 (80%) | **23/25 (92%)** |
+| Legal description | 20/25 (80%) | **24/25 (96%)** |
+
+**Investor completeness** (lender never required for FULLY USEFUL, per
+spec; county valuation only required when a CAD parcel is confirmed):
+
+| Classification | Before | After |
+|---|---|---|
+| FULLY USEFUL | 0 (0%) | **10 (40%)** |
+| USEFUL | 14 (56%) | 5 (20%) |
+| LIMITED | 11 (44%) | 10 (40%) |
+
+**11 records improved classification** (all USEFUL/LIMITED -> a stronger
+tier): HID-117630, 117631, 117632, 117633, 117642, 117659, 117660, 117675,
+117695, 117698 (USEFUL -> FULLY USEFUL), and HID-117701 (LIMITED ->
+USEFUL, via a newly-recovered sale date). **Zero records regressed** --
+confirmed by re-deriving the same classification against the actual
+persisted database state, not just the earlier in-memory computation, and
+diffing every one of the 25 filing numbers.
+
+Two known, pre-existing residual gaps, unaffected by this backfill and
+out of this task's scope: HID-117661's borrower name and HID-117652/
+117702's sale dates stay missing because `needsAiFallback()` only
+triggers when 2+ of its 5 tracked fields are weak -- these cases each had
+exactly 1 weak field, so AI fallback (old or new) was never invoked for
+them. Tightening that trigger is a distinct, separate improvement, not
+assumed here.
+
+### Manual spot-check
+
+Every changed borrower and principal value is byte-identical to the
+values already manually verified against source `rawText` in the
+extraction-repair task's step 9 (see above) -- CONFIRMED CORRECT or
+LIKELY CORRECT in all 9 cases, zero fabrications. No new spot-check was
+needed since the backfill wrote exactly those already-verified values;
+re-confirmed here that what's now in production matches what was checked.
+
+### Explicitly out of scope, not silently done
+
+- `ManualReviewTask` rows (e.g. `BORROWER_NAME_CONFLICT`,
+  `SALE_DATE_CONFLICT`) created at original ingestion time were **not**
+  auto-resolved, even where the underlying field is now fixed -- resolving
+  a review task is a distinct admin-workflow action with its own
+  audit semantics, not assumed here.
+- `ForeclosureCase.summaryText` (the generated display blurb) was **not**
+  regenerated -- it still reflects the pre-backfill extraction for the 19
+  changed records. Worth a follow-up if the summary text is investor-
+  facing anywhere the structured fields now disagree with it.
+
+**Phase 1 verified clean, zero regressions -- proceeding to Phase 2 per
+the approved two-phase plan.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
