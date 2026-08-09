@@ -48,5 +48,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DIRECT_URL: ${{ secrets.DIRECT_URL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.FORECLOSUREDATA_ANTHROPIC_API_KEY }}
         run: pnpm --filter @foreclosuredata/web run repair:extraction25
