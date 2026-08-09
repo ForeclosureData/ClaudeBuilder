@@ -1,0 +1,56 @@
+name: Hidalgo Baseline Regeneration (remaining 72 cases)
+
+# One-off, manually-triggered: regenerates derived CAD data for the 72
+# baseline cases not already covered by the 10-case pilot (see
+# docs/DEPLOYMENT.md's pilot report). Runs via GitHub Actions rather than
+# a Netlify Function since CAD requests are rate-limited (~2s each) and
+# 72 cases can take several minutes to tens of minutes end to end.
+#
+# Derived-data regeneration ONLY -- see
+# apps/web/scripts/regenerate-remaining-72.mts and
+# apps/web/lib/regeneration/regenerateCase.ts for the full safety
+# contract: no ForeclosureCase/SourceDocument writes, no ingestion, no
+# new county, no AI calls, notice-transcribed Property fields are never
+# overwritten, NO_ADDRESS_RESOLVED cases never get an automatic Property
+# assignment.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Regenerate remaining 72 baseline cases
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          BULK_MAX_REQUESTS_PER_CASE: "10"
+          BULK_MAX_GLOBAL_REQUESTS: "500"
+          BULK_VALUATION_MAX_YEARS_BACK: "2"
+        run: pnpm --filter @foreclosuredata/web run regenerate:remaining-72
