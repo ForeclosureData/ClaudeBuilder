@@ -399,3 +399,93 @@ Date of Sale: September 1, 2026`;
     expect(result.borrowerNames.confidence).toBe(0);
   });
 });
+
+// Confirmed against the real 25-notice fresh-ingestion sample (extraction
+// repair, 2026-08-09): 17 of 25 real notices weren't matched by the
+// original two principal patterns, which required a literal contiguous
+// "original principal amount of" with plain single spaces. 10 of those 17
+// actually had that exact phrase, just with a PDF line-wrap in the middle
+// -- these fixtures use placeholder names/amounts but mirror the real line
+// breaks and surrounding wording.
+describe("extractDeterministic (original principal amount -- real Hidalgo template variants)", () => {
+  it("matches 'original principal amount of' across a PDF line-wrap between 'original' and 'principal'", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+...including by not limited to (1) the promissory note in the original
+principal amount of $180,175.00, executed by SAMPLE BORROWER AND JOE SAMPLE...`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(180175);
+    expect(result.originalPrincipalAmount.explicitlyStated).toBe(true);
+  });
+
+  it("matches 'original principal amount of' across a PDF line-wrap between 'amount' and 'of'", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+...(1) the promissory note in the original principal amount
+of $313,222.00, executed by SAMPLE BORROWER, an unmarried person...`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(313222);
+  });
+
+  it("tolerates a single stray OCR token between 'original' and 'principal'", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+...including by not limited to (1) the promissory note in the original H
+principal amount of $73,641.00, executed by SAMPLE BORROWER AND SAMPLE SPOUSE...`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(73641);
+  });
+
+  it("matches an 'indebtedness in the original\\nprincipal amount of' line-wrapped narrative phrasing", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Deed of Trust executed by SAMPLE BORROWER, a single man securing payment of the indebtedness in the original
+principal amount of $218,960.00 and obligation therein described including but not limited to...`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(218960);
+  });
+
+  it("matches a bare 'Original Principal:' label with no 'Amount' word", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Original Mortgagee: SAMPLE MORTGAGE COMPANY
+Current Mortgagee: Sample Mortgagee: SAMPLE SERVICING GROUP, INC.
+Original Principal: $292,605.00
+Recording Information: Document No. 3342531`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(292605);
+  });
+
+  it("matches an 'Amount:' line directly under 'Deed of Trust Dated:' in a key-value template", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+HIDALGO County
+Deed of Trust Dated: October 22, 2020
+Amount: $180,000.00
+Grantor(s): SAMPLE BORROWER and SAMPLE CO-BORROWER
+Original Mortgagee: SAMPLE MORTGAGE COMPANY`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(180000);
+  });
+
+  it("infers the original principal from 'Note dated <date> in the amount of $X' when no 'principal' label is present at all", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+Obligation Secured: The Deed of Trust executed by SAMPLE BORROWER secures the repayment of a Note
+dated November 30, 2017 in the amount of $88,712.00.
+Sale Information: August 4, 2026, at 10:00 AM.`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBe(88712);
+  });
+
+  it("discards an implausibly small parsed amount rather than trusting OCR-mangled digit grouping (e.g. '$216 015 00' instead of '$216,015.00')", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Deed of Trust executed by SAMPLE BORROWER securing payment of the indebtedness in the original principal amount of $216 015 00, and obligations therein described including but not limited to...`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBeNull();
+    expect(result.originalPrincipalAmount.explicitlyStated).toBe(false);
+  });
+
+  it("returns null (never guesses) when no dollar amount appears anywhere in the notice", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+WHEREAS, default has occurred in the payment of said indebtedness, and the same is now wholly due, and the owner
+and holder has requested to sell said property to satisfy said indebtedness.
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.originalPrincipalAmount.value).toBeNull();
+    expect(result.originalPrincipalAmount.confidence).toBe(0);
+  });
+});

@@ -1,6 +1,6 @@
 import type { ExtractedForeclosureNotice, ExtractedValue } from "@foreclosuredata/types";
 import { extractDeterministic, needsAiFallback } from "./deterministic/texasTemplates";
-import { extractWithAI, type BudgetGuard } from "./ai/extractWithAI";
+import { extractWithAI, type AiFieldOutcome, type BudgetGuard } from "./ai/extractWithAI";
 
 export interface ExtractionPipelineResult {
   extracted: ExtractedForeclosureNotice;
@@ -9,8 +9,12 @@ export interface ExtractionPipelineResult {
   overallConfidence: number;
   needsManualReview: boolean;
   manualReviewReasons: string[];
-  /** Set when Layer 2 was attempted (spent budget) but its result couldn't be merged -- visible in the run summary rather than silently discarded, since budget was still spent. */
+  /** Set when Layer 2 was attempted (spent budget) but produced zero usable fields -- visible in the run summary rather than silently discarded, since budget was still spent. */
   aiFailureReason?: string;
+  /** Per-field validation outcome of the AI call, for cost/yield instrumentation. Empty when AI wasn't invoked. */
+  aiFieldOutcomes: AiFieldOutcome[];
+  aiInputTokens?: number;
+  aiOutputTokens?: number;
 }
 
 /**
@@ -29,13 +33,24 @@ export async function runExtractionPipeline(
   let usedAiFallback = false;
   let aiCostCents = 0;
   let aiFailureReason: string | undefined;
+  let aiFieldOutcomes: AiFieldOutcome[] = [];
+  let aiInputTokens: number | undefined;
+  let aiOutputTokens: number | undefined;
 
   if (needsAiFallback(deterministic)) {
     const aiOutcome = await extractWithAI(noticeText, budget, aiOptions);
     aiCostCents = aiOutcome.costCents;
+    aiFieldOutcomes = aiOutcome.fieldOutcomes;
+    aiInputTokens = aiOutcome.inputTokens;
+    aiOutputTokens = aiOutcome.outputTokens;
     if (aiOutcome.ranAiExtraction && aiOutcome.result) {
-      usedAiFallback = true;
-      merged = mergePreferringNonNull(deterministic, aiOutcome.result);
+      const recoveredAtLeastOneField = aiOutcome.fieldOutcomes.some((f) => f.status === "accepted" && f.hadValue);
+      if (recoveredAtLeastOneField) {
+        usedAiFallback = true;
+        merged = mergePreferringNonNull(deterministic, aiOutcome.result);
+      } else {
+        aiFailureReason = aiOutcome.reason ?? "AI call succeeded but recovered no usable fields";
+      }
     } else if (aiOutcome.ranAiExtraction) {
       aiFailureReason = aiOutcome.reason;
     }
@@ -52,6 +67,9 @@ export async function runExtractionPipeline(
     needsManualReview: manualReviewReasons.length > 0,
     manualReviewReasons,
     aiFailureReason,
+    aiFieldOutcomes,
+    aiInputTokens,
+    aiOutputTokens,
   };
 }
 

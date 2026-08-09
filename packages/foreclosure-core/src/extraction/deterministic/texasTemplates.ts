@@ -18,8 +18,18 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
 
   const lenderParties = extractLenderParties(text);
 
-  const principalLabelMatch = text.match(/Original Principal Amount:?\s*\$[\d,.]+/i) ?? text.match(/original principal amount of\s*\$[\d,.]+/i);
-  const originalPrincipalCents = principalLabelMatch ? parseCurrencyToCents(principalLabelMatch[0]) : null;
+  const principalLabelMatch = matchOriginalPrincipal(text);
+  let originalPrincipalCents = principalLabelMatch ? parseCurrencyToCents(principalLabelMatch[0]) : null;
+  // Real Texas mortgage principals are never a few hundred dollars -- a
+  // parsed value this small means the currency capture stopped early on
+  // OCR-mangled digit grouping (confirmed against a real Hidalgo notice:
+  // "$216 015 00" instead of "$216,015.00", where the missing commas made
+  // parseCurrencyToCents stop at "$216"). Discarding rather than trusting
+  // an implausibly low figure -- unknown is valid, a fabricated-looking
+  // wrong number is not.
+  if (originalPrincipalCents !== null && originalPrincipalCents < 100_000) {
+    originalPrincipalCents = null;
+  }
 
   const unpaidBalanceMatch = text.match(/unpaid balance owing on the Note is\s*\$[\d,.]+/i) ?? text.match(/unpaid balance\s*(?:owing|is|of)?\s*\$[\d,.]+/i);
   const currentBalanceCents = unpaidBalanceMatch ? parseCurrencyToCents(unpaidBalanceMatch[0]) : null;
@@ -141,6 +151,38 @@ export function needsAiFallback(extracted: ExtractedForeclosureNotice): boolean 
   ];
   const weak = criticalFields.filter((f) => f.value === null || f.confidence < 0.6);
   return weak.length >= 2;
+}
+
+/**
+ * Matches the original loan principal against every real phrasing
+ * confirmed in the 25-notice fresh-ingestion sample (2026-08-09 extraction
+ * repair). The original two patterns only matched contiguous single-space
+ * phrasing; checked against the sample, 10 of the 17 notices that fell
+ * through to AI fallback for this field actually had the label -- just
+ * with a PDF-wrap line break in the middle (e.g. "the original\nprincipal
+ * amount of $X"), which those patterns' literal spaces couldn't cross.
+ * Relaxing to \s+ recovers all of those without widening what counts as a
+ * match. The three new patterns below each come from a real notice in the
+ * same sample:
+ *  - "Original Principal:" (no "Amount" word) -- HID-117659
+ *  - "Deed of Trust Dated: ...\nAmount: $X" (the loan amount in a
+ *    key-value template, immediately under the Deed of Trust date, no
+ *    other "Amount:" label anywhere in that document) -- HID-117700
+ *  - "Note dated <date> in the amount of $X" (narrative, no "principal"
+ *    label at all, but unambiguous: the note's stated amount at signing
+ *    is its original principal) -- HID-117633
+ * Four of the 17 (117635, 117648, 117651, 117701) have no dollar amount
+ * anywhere in the document at all -- genuinely not stated, left null
+ * rather than guessed.
+ */
+function matchOriginalPrincipal(text: string): RegExpMatchArray | null {
+  return (
+    text.match(/Original Principal Amount:?\s*\$[\d,.]+/i) ??
+    text.match(/original(?:\s+[A-Za-z]\b)?\s+principal\s+amount\s+of\s*\$[\d,.]+/i) ??
+    text.match(/Original Principal:?\s*\$[\d,.]+/i) ??
+    text.match(/Deed of Trust Dated:?[^\n]*\n\s*Amount:?\s*\$[\d,.]+/i) ??
+    text.match(/Note\s+dated\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}\s+in the amount of\s*\$[\d,.]+/i)
+  );
 }
 
 function value<T>(v: T | null, opts: { explicitlyStated: boolean; confidence: number; supportingText: string | null }): ExtractedValue<T> {
