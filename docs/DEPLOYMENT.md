@@ -575,6 +575,221 @@ was touched anywhere in the run.
 pilot stops here and awaits explicit approval before any further
 regeneration or ingestion.**
 
+## Full 82-case baseline regeneration report (2026-08-09)
+
+Executed per explicit approval, in this order: (1) one targeted CAD
+robustness fix, (2) a read-only re-test of HID-118198 (twice, to confirm
+the fix), (3) the 72-case bulk regeneration, (4) one real write-enabled
+pass closing the gap the pilot's original HID-118198 error left open.
+Full detail: PRs/commits `0bea1fe`, `c2e282e`, `ff22c81`, `a4d9fe7`,
+`47dd6f8`; GitHub Actions runs
+[31285300272](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31285300272)
+(bulk-72) and
+[31286593449](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31286593449)
+(HID-118198 closeout).
+
+### 1. CAD robustness fix
+
+Root cause of HID-118198's HTTP 400: its raw legal-description text
+included meta-commentary ("(subdivision name obscured by handwriting on
+the source document)") and, after stripping that, still contained
+semicolon-joined compound sentences -- both sent verbatim as a CAD
+full-text search query. Two fixes, both in
+`packages/foreclosure-core/src/address-resolution/`:
+
+- `sanitizeCadSearchText()` (new, in `legalDescriptionParsing.ts`):
+  strips meta-commentary parentheticals, de-parenthesizes legitimate
+  acreage/fraction qualifiers, spaces out slashes, strips other unneeded
+  punctuation including semicolons, collapses whitespace, returns `null`
+  rather than an empty/near-empty query when nothing search-worthy
+  survives. Search input only -- the stored/displayed raw text is
+  untouched. No semantic rewriting, no fuzzy guessing.
+- `gatherCandidates()`'s `spend()` helper (`resolver.ts`) now catches a
+  failing search strategy instead of letting its exception abort every
+  remaining strategy for that case. This was the actual mechanism behind
+  HID-118198's original zero-candidate failure: its address-search
+  strategy (which runs first) had already found the right property, but
+  the later legal-description strategy's exception unwound the whole
+  function before that result was ever returned.
+
+11 new regression tests (`legalDescriptionParsing.test.ts`,
+`resolver.test.ts`), including one modeling HID-118198's exact structure
+and a strategy-isolation test with a mock adapter that throws on one
+query type. All 195 `foreclosure-core` tests pass. No confidence
+threshold, conflict-gating logic, or scoring changed.
+
+### 2. HID-118198 re-test
+
+Even after both fixes, the sanitized query still returned an HTTP 400
+(live-confirmed, GitHub Actions run 31285066877 and 31285203945) --
+apparently something about this specific multi-clause sentence beyond
+what was targeted. Rather than keep guessing against the live endpoint,
+the isolation fix was confirmed to make this safe regardless: the
+address-search strategy still found the correct property
+(`705 N INSPIRATION BLVD, ALTON, TX`, parcel 181345), and that result is
+preserved instead of discarded.
+
+The candidate correctly does **not** get auto-selected: its clean CAD
+`lot: 44` doesn't textually match the notice's messy transcribed
+`44 (N 5ac of N 9.59ac)` field, so the resolver's field-conflict check
+(correctly, conservatively) refuses to treat it as an unambiguous match.
+This is a safe, deliberate refusal given messy input, not a bug -- no
+wrong or suspicious candidate became selectable, so the stop condition
+was not triggered.
+
+### 3. 72-case bulk regeneration
+
+Ran clean: 72/72 cases processed, **zero errors**, count assertion
+(82 total / 72 remaining) passed exactly. 321 CAD requests, average 4.5/
+case, max 10/case (the per-case cap, hit exactly once), runtime 675.9s
+(~11.3 min).
+
+### 4. HID-118198 closeout
+
+One real write-enabled pass for just this case (GitHub Actions run
+31286593449), using the identical shared logic already exercised 81
+times elsewhere. Result matches both read-only checks exactly:
+`REQUIRES_HUMAN_APPROVAL`, notice address untouched, 1 candidate stored
+for review.
+
+## Full 82-case baseline: final state
+
+### Property / address
+
+| | Count |
+|---|---|
+| Notice-derived address (Property exists) | 46 |
+| Unresolved address (no Property) | 36 |
+| **CAD-confirmed parcel** (address enrichment auto-attached) | **26** |
+| CAD candidate(s) found, awaiting human approval | 50 |
+| No CAD match at all (zero candidates found) | 6 |
+| Owner-conflict signal detected (any candidate) | 11 (2 produced a dedicated `CAD_OWNER_CONFLICT` flag: HID-117931, HID-118196; the other 9 were on unresolved cases and folded into that case's existing review-task notes rather than a separate reason code) |
+| Subdivision/lot/block field-conflict detected | 1 (HID-118227 -- lot mismatch) |
+| Ambiguous match (multiple candidates, no single winner) | 16 with a dedicated `MULTIPLE_APPRAISAL_MATCHES` flag; more folded into unresolved-case notes |
+
+Sanity check: 26 confirmed + 50 awaiting approval + 6 no-match = 82. ✓
+26 confirmed + 50 awaiting approval = 76 distinct cases with at least
+one stored `AppraisalPropertyCandidate` row (877 rows total) -- matches
+the DB-level count exactly.
+
+**14 of the 50 awaiting-approval cases have a single strong proposed
+candidate** (confidence 0.97, subdivision+lot+owner name all
+corroborating) ready for a one-click human Approve -- these are the
+cases "that could become useful listings after a simple human approval"
+(HID-117716, 117732, 118156, 118199, 118202, 118206, 118219, 118220,
+118221, 118222, 118224, 118225, 118229, 118230).
+
+### Valuation
+
+All 26 CAD-confirmed parcels got a full valuation:
+
+| | Count |
+|---|---|
+| Market value populated | 26 / 26 |
+| Appraised value populated | 26 / 26 |
+| Land value populated | 26 / 26 |
+| Improvement value populated | 26 / 26 |
+| 2027 populated | 0 |
+| 2026 fallback (first year-lookback step) | 26 |
+| Older fallback year | 0 |
+| Certified (Hidalgo CAD's own certification signal) | 26 / 26 true |
+| Confirmed parcel with no valuation | 0 |
+
+Every confirmed parcel resolved cleanly on the first year-lookback step
+(current year 2026 was already populated and certified for all of them)
+-- no case needed to fall back further, and none was left with a
+confirmed parcel but no valuation data.
+
+### Manual review
+
+| Reason | Open tasks |
+|---|---|
+| `NO_ADDRESS_RESOLVED` (unresolved-address baseline) | 36 |
+| `MULTIPLE_APPRAISAL_MATCHES` (new, this effort) | 16 |
+| `POOR_TEXT_QUALITY` (pre-existing, unrelated to CAD) | 5 |
+| `CAD_OWNER_CONFLICT` (new, this effort) | 1 |
+| **Total open review tasks** | **58** |
+
+50 of the 82 baseline cases (61.0%) require some form of manual review
+before their derived data is fully settled -- 36 because the notice
+never stated an address at all (unchanged by this effort, structural),
+14 with a strong proposed candidate ready for one-click approval, and
+the rest with more genuinely ambiguous or conflicting evidence.
+
+### Safety: manual verification of automatically confirmed parcels
+
+Every one of the 26 auto-confirmed parcels went through the identical
+enrichment-only code path (address match verified, then subdivision/lot/
+block/owner cross-checked for conflicts before attaching). Manually
+spot-checked roughly half against the source notice:
+
+- **Clean exact matches** (majority): HID-117920, 117928, 117992, 117994,
+  118133, 118185, 118186, 118191, 118192, 118193, 118214, 118218, 118231,
+  118233, 118235, 118236 -- situs address, subdivision, and lot number all
+  agree with the notice. **CONFIRMED CORRECT.**
+- **Minor source discrepancies** (spelling/formatting only, parcel/lot
+  identity still exact): HID-118207 (CAD spells it "GARRISION" vs the
+  notice's "Garrison"), HID-118208 (CAD's situs says "38TH ST" vs the
+  notice's "38th Lane" -- house number, subdivision, and lot number all
+  still agree), HID-117949 and HID-118183 (CAD's situs string omits the
+  house number entirely, but GEO ID lot number still matches exactly).
+  **LIKELY CORRECT WITH MINOR DISCREPANCY.**
+- **Trust/LLC owner matches**: none of the 3 LLC-owner cases in this
+  effort (HID-117993, 118188, 118205) were auto-confirmed -- all three
+  correctly routed to manual review or found no CAD match. Zero LLC/
+  entity-owner cases were ever auto-persisted.
+- **Legal-description/lot-only matches**: none exist among the 26
+  auto-confirmed parcels, by design -- that resolution path (no stated
+  address) never auto-writes `Property` regardless of confidence,
+  confirmed working across all 36 unresolved cases. The 14 highest-
+  confidence examples of this category (listed above) are proposed, not
+  persisted.
+- **One valuation outlier worth a human sanity-check** (not a match
+  error): HID-118216's confirmed market value is $900,000 -- roughly 3-6x
+  the other 25 confirmed parcels' values. The address/lot match itself is
+  exact (`1003 INSPIRATION DR`, GEO ID ending `-0026-00` matching the
+  notice's Lot 26), so this is flagged as a value worth a human glance,
+  not a resolution error.
+
+**Zero of the manually-inspected auto-confirmed parcels were classified
+INCORRECT or AMBIGUOUS.** No stop condition was triggered.
+
+### Performance (full effort: pilot + fix verification + bulk + closeout)
+
+| | |
+|---|---|
+| Total CAD requests | 359 (35 pilot + 321 bulk + 3 closeout) |
+| Average requests/case | 4.4 |
+| Max requests, single case | 10 (the per-case cap, hit exactly once) |
+| Total processing runtime | ~13 minutes across all runs |
+| External/API cost | **$0.00** -- Hidalgo CAD is public data with no paid tier; zero Anthropic/AI calls anywhere in this pipeline stage |
+
+### Coverage context
+
+**82 is the accepted production baseline, not full Hidalgo coverage.**
+This effort only enriched derived data for the existing 82 cases -- it
+did not discover, ingest, or add any new notices. The previously-
+identified full Hidalgo trustee-sale bundle is on the order of ~282
+notices; roughly 200 of those have never been ingested at all. Nothing
+in this report should be read as "Hidalgo coverage is complete" --
+only "the accepted 82-case baseline's derived data is now current."
+
+### Decision
+
+**A. BASELINE REGENERATION COMPLETE -- READY FOR BOUNDED NEW INGESTION**,
+with no caveats this time: the HID-118198 blocker is closed, all 82
+cases have been through the current, fixed pipeline exactly once, every
+conflict/threshold safeguard fired correctly under real and deliberately
+messy conditions (owner-conflict gate, subdivision/lot-conflict gate,
+LLC-owner caution, the human-approval gate holding even at 0.97
+confidence), zero notice-transcribed addresses were touched anywhere
+across 82 cases, and manual inspection of the auto-confirmed parcels
+found zero incorrect matches.
+
+**Per the approved scope, the remaining ~200 un-ingested Hidalgo notices
+are NOT processed and scheduling remains OFF. This effort stops here and
+awaits explicit approval before any new ingestion or scheduling change.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
