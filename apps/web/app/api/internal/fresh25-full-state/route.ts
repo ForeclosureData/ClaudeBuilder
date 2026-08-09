@@ -51,5 +51,12 @@ export async function GET(request: Request) {
     },
   });
 
-  return NextResponse.json({ count: cases.length, cases });
+  const caseIds = cases.map((c) => c.id);
+  const auditLogs = await prisma.auditLog.findMany({
+    where: { entityType: "ForeclosureCase", entityId: { in: caseIds }, action: { startsWith: "EXTRACTION_BACKFILL_" } },
+    select: { action: true, entityId: true, beforeJson: true, afterJson: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  return NextResponse.json({ count: cases.length, cases, auditLogCount: auditLogs.length, auditLogs });
 }
