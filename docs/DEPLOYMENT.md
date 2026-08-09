@@ -2255,3 +2255,55 @@ approval.**
 - No automated uptime/error alerting exists yet. Adding a simple external
   uptime check (e.g. a free UptimeRobot monitor) against the production
   URL is a cheap, currently-missing improvement — see `docs/BACKLOG.md`.
+
+## Hidalgo productization pass (legacy reconciliation + publication readiness)
+
+After the 282-notice bundle finished ingesting across three bounded
+batches, this pass addressed two things before any manual-review push:
+why the DB showed 364 rows against a 282-notice bundle, and the complete
+lack of a publication gate on the public site (every non-archived case
+was shown identically regardless of resolution/review state).
+
+### Metrics glossary — never conflate these under "foreclosures"
+
+| Term | What it counts | Where it comes from |
+| --- | --- | --- |
+| **Source notices detected** | Barcode-scanned cover sheets in the county's posted bundle | `ci-select-hidalgo-target.mts` scan, independent of the DB |
+| **Source notices ingested** | Notices that made it through extraction + persistence | `ForeclosureCase` rows with `countyFilingNumber IS NOT NULL` |
+| **Unique county filings** | Distinct `(countyId, countyFilingNumber)` pairs | The DB's own identity/dedup key (`ForeclosureCase.countyFilingNumber`) |
+| **Unique foreclosure events** | Filings minus confirmed/likely same-event duplicates | Filings − `PossibleDuplicateNoticeLink` rows at `CONFIRMED_SAME_EVENT`/`LIKELY_SAME_EVENT` — the linked cases stay as separate rows, never merged |
+| **Unique physical properties** | Distinct real-world parcels behind those events | Not currently computed by any script (would need de-duping `AppraisalPropertyCandidate.sourcePropertyId`/CAD parcel ID across cases) — treat as an open gap, not a solved number |
+| **Investor-visible listings** | Cases a public visitor can actually see | `computePublicationStatus()` in `@foreclosuredata/foreclosure-core` → `PUBLISHED` + `PUBLISHED_WITH_LIMITED_DATA` only, via `getPublicForeclosureCases()`/`filterPublic()` in `apps/web/lib/` |
+| **CAD-confirmed properties** | Cases with an auto-selected appraisal-district match | `AppraisalPropertyCandidate.isSelected = true` |
+| **Listings pending review** | Cases with an open, publication-blocking review reason | `computePublicationStatus()` → `PENDING_REVIEW`, or an open `ManualReviewTask` for cases still `PUBLISHED_WITH_LIMITED_DATA` (non-blocking gap) |
+
+**Why this matters**: before this pass, `ForeclosureCase.countyFilingNumber`
+was null on all 82 legacy-seeded rows (a seed-script gap, not a bug in the
+new ingestion pipeline — see `prisma/seed.ts`'s `seedRealCase()`), so the
+duplicate-group check every batch report relied on
+(`GROUP BY county_filing_number HAVING COUNT(*) > 1`) was structurally
+blind to them. Two legacy rows turned out to be the exact same real-world
+event as two automated-ingestion rows (same Deed of Trust instrument
+number), invisible to every check run during the three-batch rollout.
+Any future script that reports a single "total foreclosures" number
+without stating which of the above eight it means will reintroduce this
+kind of silent inflation.
+
+### Publication-readiness model
+
+See `packages/foreclosure-core/src/publication/publicationStatus.ts` for
+the full decision logic and `apps/web/lib/publicationVisibility.ts` for
+the Prisma wiring. Five states — `PUBLISHED`,
+`PUBLISHED_WITH_LIMITED_DATA`, `PENDING_REVIEW`, `WITHHELD`, `ARCHIVED` —
+computed on read from the case's actual data (never a stored, driftable
+flag). Only identity/conflict risk blocks publication (CAD owner
+conflict, borrower-name conflict, sale-date conflict, missing filing
+number, an open same-event duplicate link, poor text quality, or having
+no address AND no legal description at all); missing enrichment (lender,
+servicer, county valuation, CAD confirmation, principal, or even a street
+address on its own) never does. Every public-facing route (property
+list, county page, public API, CSV export, property detail page + API,
+saved properties, watchlist) goes through this — see the Phase 4 commit
+for the two real gaps found and fixed while wiring it in
+(`archivedAt` was never filtered at all in `buildForeclosureCaseWhere()`,
+and county-page stat counts had the same gap).
