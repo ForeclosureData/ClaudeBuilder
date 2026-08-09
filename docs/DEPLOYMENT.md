@@ -32,6 +32,100 @@
   model with no execution code anywhere in the repo. All real execution
   today is either a Next.js API route or the GitHub Actions script above.
 
+## Database connection architecture
+
+Investigated and confirmed 2026-08-09 while unblocking the
+`PossibleDuplicateNoticeLink` migration (see "Fix round 3" below) —
+resolved with hard, non-destructive evidence (a temporary read-only
+diagnostic route, cross-checking a known backfilled value and row counts
+across both environments), not assumption. No credentials are recorded
+below — only host/provider/mode information, per this project's standing
+"no production secrets in logs" rule.
+
+**The production database is Netlify DB (Neon-backed Postgres)** —
+`ep-fancy-shape-...db.netlify.com`. This matches what this doc already
+said above; the investigation was needed because a *different* connection
+string (a Supabase pooler host, `*.pooler.supabase.com`) was observed in
+a GitHub Actions build log and raised a real question about whether GitHub
+Actions and Netlify were operating on two different databases — the same
+class of mistake as the 2026-08-08 incident below.
+
+**`DATABASE_URL`** — read/write runtime connection. Used by Prisma
+Client for every ordinary query (the app itself, and every GitHub Actions
+script in this repo that reads/writes data — ingestion, backfills,
+repairs, the fix-round-3 re-eval). **Confirmed correct in both
+environments**: cross-checked a value only ever written via a GitHub
+Actions script (HID-117914's corrected borrower name) against what
+Netlify's own runtime connection reads back — identical. Row counts
+(132 `ForeclosureCase` rows) also matched exactly. GitHub Actions and
+Netlify have always been reading and writing the same real production
+database via `DATABASE_URL` — none of this project's prior GitHub
+Actions-run backfills/repairs were misdirected.
+
+**`DIRECT_URL`** — schema-DDL connection, used *only* by `prisma db push`
+/ `prisma migrate`. **This is where the actual bug was**: the GitHub
+Actions repository secret named `DIRECT_URL` was pointing at a
+`*.pooler.supabase.com` connection — almost certainly a stale/incorrect
+value, quite possibly confused with the *separate* Supabase project this
+app uses for Auth only (`packages/auth`, never application data — see
+"Actual current setup" above). Every ordinary query from GitHub Actions
+uses `DATABASE_URL` (correct), so this was invisible until something
+specifically needed `db push`. Real error observed:
+`FATAL: (ENOTFOUND) tenant/user postgres.xxxxx not found` — a pgbouncer/
+Supavisor rejection, not a DNS failure despite the label.
+
+**Netlify's own production build was never affected by this**, and this
+is why: `netlify.toml`'s build command does `export
+DIRECT_URL="$DATABASE_URL"` immediately before running `db:push` —
+deliberately overriding whatever `DIRECT_URL` a Netlify site environment
+variable might hold, forcing the schema push to use the exact same
+connection as the verified-correct `DATABASE_URL`. Every Netlify
+production deploy's `db:push` step has been targeting the real database
+correctly all along.
+
+**Why a pooled transaction-mode connection must never be used for DDL**:
+Supabase's Supavisor (and pgbouncer generally) in *transaction* pooling
+mode multiplexes many client sessions over few server connections,
+switching which server connection a client uses between transactions —
+`prisma db push`/`migrate` need advisory locks and multi-statement DDL
+held across a session, which transaction-mode pooling breaks. This is why
+Prisma's own schema declares `directUrl` as a separate value from `url`
+in the first place (`packages/database/prisma/schema.prisma`) — `url` is
+allowed to be pooled, `directUrl` must be a true session-mode or direct
+connection.
+
+**The fix applied**: none of the DATABASE_URL/DIRECT_URL *values* needed
+to change — the schema migration for this round was applied through the
+already-correct, already-safe Netlify build path (a normal deploy, using
+`netlify.toml`'s existing `db:push` step, which already overrides
+`DIRECT_URL` correctly) rather than by touching the broken GitHub Actions
+secret. **Outstanding, for an admin**: the GitHub Actions repository
+secret `DIRECT_URL` should still be corrected, so future schema changes
+triggered from a GitHub Actions workflow (rather than a full Netlify
+deploy) don't hit the same wall. The correct value is simply **the exact
+same connection string already stored in the `DATABASE_URL` secret** — no
+provider dashboard visit is needed; update the GitHub repository secret
+(Settings → Secrets and variables → Actions → `DIRECT_URL`) to match the
+existing `DATABASE_URL` secret's value.
+
+**Safe verification procedure for any future schema migration** (the
+sequence used for this round, worth reusing):
+1. Deploy via the existing, already-safe Netlify build path when
+   possible — it already runs `db:push` with a correct, overridden
+   `DIRECT_URL`, and existing "Production deploy rules" already govern it
+   (never seeds, prints the target host, a push failure fails the build).
+2. Before trusting the result, confirm via a temporary read-only
+   diagnostic route (this project's established pattern — see
+   `apps/web/app/api/internal/`, secret-gated behind
+   `INTERNAL_INGEST_SECRET`): the connection host/port (never full
+   credentials), a `ForeclosureCase` (or other stable table) row count
+   compared to the last known-good value, and that the migration's target
+   table/index now exists.
+3. Only then run any write operation the new schema enables.
+4. Retire the diagnostic route to a 410 stub immediately after (this
+   directory's established convention — this deploy target doesn't
+   reliably drop a route on file deletion alone).
+
 ## Environment variables
 
 See `.env.example` for the full, current list and inline documentation.
@@ -1779,27 +1873,33 @@ above; summary:
 | HID-117914 | 2 fields backfilled (truncation-repair only), verified correct |
 | HID-117729/HID-117731 | Classified `CONFIRMED_SAME_EVENT` — **not** merged, **not** archived, filing numbers unchanged |
 
-**One real infrastructure blocker, reported rather than worked around:**
-the `PossibleDuplicateNoticeLink` table could not be created in
-production. `prisma db push` against this repo's `DATABASE_URL`/
-`DIRECT_URL` GitHub secrets fails consistently with `FATAL: (ENOTFOUND)
-tenant/user postgres.xxxxx not found` — both secrets resolve to
-Supabase's connection *pooler* (`aws-0-us-east-1.pooler.supabase.com:6543`),
-and `prisma db push` (schema DDL) needs a true non-pooled/session-mode
-connection, which pgbouncer's transaction-pooling mode rejects. This is a
-pre-existing secrets/infra configuration gap, not a code defect — every
-other script in this project only runs ordinary queries through the
-pooler, which works fine; this is the first operation in the project that
-needed real schema DDL from GitHub Actions. **Fix requires an admin to
-set the `DIRECT_URL` secret to Supabase's actual direct/session-mode
-connection string** (typically `db.<project-ref>.supabase.co:5432` or the
-pooler's port-5432 session-mode variant). Until then: the detection
-engine, admin UI, and write-path code are complete and tested (verified
-against real production data, computing the correct `CONFIRMED_SAME_EVENT`
-result for 117729/117731 with zero errors) — only the one `INSERT` is
-blocked. The write path was defensively isolated (try/catch + `continue-
-on-error`) so this single blocked table never prevented the HID-117888/
-HID-117914 backfills, which don't depend on it, from completing.
+**Infrastructure blocker — investigated and resolved 2026-08-09, see
+"Database connection architecture" above for the full root cause.**
+Summary: the `PossibleDuplicateNoticeLink` table couldn't be created via
+the standalone GitHub Actions `db:push` step (`DIRECT_URL` GitHub secret
+was misconfigured, pointing at an unrelated Supabase pooler — most likely
+confused with the separate Supabase Auth project this app also uses).
+`DATABASE_URL` (used for every ordinary query, including all of this
+round's field backfills) was confirmed correct and unaffected the whole
+time. The migration was applied through the already-correct, already-safe
+Netlify production build path instead (which independently forces
+`DIRECT_URL=DATABASE_URL` for its own `db:push` step) — a normal deploy,
+not a new or unsafe DDL mechanism. Verified via a temporary read-only
+diagnostic route before and after: table created, `foreclosure_cases`
+row count unchanged (132), the `(countyId, countyFilingNumber)` unique
+index intact, zero `ProcessingJob` rows (no ingestion triggered). The
+`fix-round-3:reeval` script (idempotent — upserts on `(caseAId,
+caseBId)`) was then re-run for real and **the HID-117729/HID-117731 link
+is now persisted in production**: `CONFIRMED_SAME_EVENT`, score 1.0, all
+9 fields matched, zero conflicts, status `OPEN` awaiting a reviewer —
+both cases and both county filing numbers remain fully intact and
+distinct, confirmed via the same diagnostic route. `/admin/duplicate-
+notices` reads this exact row. Outstanding, non-blocking: the GitHub
+Actions `DIRECT_URL` secret itself should still be corrected (to the
+same value already stored in the `DATABASE_URL` secret) so a *future*
+schema change triggered from a standalone GitHub Actions workflow (rather
+than a full Netlify deploy) doesn't hit the same wall — see "Database
+connection architecture" for the exact one-line fix.
 
 ### 6. Coverage concepts — five different numbers, not one
 
@@ -1810,7 +1910,7 @@ these are kept separate:
 |---|---|---|
 | **County source notices detected** | Every notice the adapter has found on the county's site, regardless of ingestion state | 282 |
 | **Unique filing numbers (source records ingested)** | Distinct `(countyId, countyFilingNumber)` rows — the existing identity/dedup rule's unit | 132 |
-| **Unique foreclosure events** | Source records minus content-duplicates confirmed by the new layer (Section 3-4) | 131 *(132 minus 1 for the 117729/117731 pair, once its `PossibleDuplicateNoticeLink` is persisted and reviewer-confirmed)* |
+| **Unique foreclosure events** | Source records minus content-duplicates confirmed by the new layer (Section 3-4) | 132 today (the 117729/117731 link is persisted at `CONFIRMED_SAME_EVENT` but status `OPEN` — per the counting rule below, it drops to 131 only once a reviewer confirms it in `/admin/duplicate-notices`, never automatically) |
 | **Unique physical properties** | Distinct resolved `Property` rows — can be lower than "unique events" (two liens, same property) or equal to it | not yet separately tracked; would require grouping resolved cases by `propertyId` |
 | **Published investor listings** | Cases that cleared publication thresholds (address/legal-description resolved, no blocking manual-review reason) | subset of "unique foreclosure events," not yet separately reported as its own number |
 
@@ -1866,22 +1966,36 @@ regression the first pass caught.
 
 ### 8. Final recommendation
 
-**B. ONE MORE ITEM REQUIRED — but it's an infra secret, not a code fix.**
+**[Superseded by the infra follow-up below — the "one more item" was
+resolved the same day via the existing safe Netlify deploy path, not a
+code fix.]** Original text preserved for the record: all three approved
+issue classes were fixed, tested, and verified against real production
+data; the only remaining step was correcting infrastructure, not code.
 
-All three approved issue classes are fixed, tested, and verified against
-real production data: HID-117888 and HID-117914 are backfilled and
-correct in production right now. The content-duplicate detection engine
-correctly classifies the real 117729/117731 pair as `CONFIRMED_SAME_EVENT`
-with zero conflicts and is fully wired (schema, engine, admin UI,
-write path) — the only remaining step is an admin correcting the
-`DIRECT_URL` GitHub secret so `prisma db push` can create the one new
-table, after which re-running `fix-round-3:reeval` (already idempotent —
-it upserts on `(caseAId, caseBId)`) will persist the link with no code
-changes needed.
+**Infra follow-up final recommendation: A. DUPLICATE-EVENT INFRA
+COMPLETE.** HID-117888 and HID-117914 remain backfilled and correct in
+production. The `PossibleDuplicateNoticeLink` table now exists in
+production (applied via the existing, already-safe Netlify build path —
+see "Database connection architecture" above), and the real
+HID-117729/HID-117731 link is persisted: `CONFIRMED_SAME_EVENT`, score
+1.0, zero conflicts, status `OPEN` in `/admin/duplicate-notices` awaiting
+a human reviewer. Both cases and both filing numbers remain fully intact.
+Verified stable: 132 `ForeclosureCase` rows (unchanged), the
+`(countyId, countyFilingNumber)` unique index intact, zero `ProcessingJob`
+rows. One non-blocking loose end remains for an admin: the GitHub
+Actions `DIRECT_URL` secret should still be corrected (to the same value
+already in `DATABASE_URL`) so a *future* schema change triggered from a
+standalone GitHub Actions workflow doesn't hit the same wall — see
+"Database connection architecture" for the exact fix.
 
-**Per the approved scope: no additional notices were processed, scheduling
-remains OFF. This effort stops here and awaits explicit approval before
-any further ingestion, the next targeted fix, or a scheduling change.**
+**Per the approved scope, even with recommendation A: no additional
+notices were ingested, scheduling remains OFF, no other county was
+added, and no extraction/property-resolution logic was touched by this
+infra round. This effort stops here and awaits explicit approval before
+any further ingestion, a scheduling change, or acting on the
+`POSSIBLE_DUPLICATE`/`CONFIRMED_SAME_EVENT` link's review state (e.g.
+changing public counting behavior) beyond what's already documented
+above as a proposed rule, not yet applied.**
 
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
