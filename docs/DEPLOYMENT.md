@@ -2156,7 +2156,99 @@ property-resolution logic was modified. This effort stops here and awaits
 explicit approval before processing any additional notices or changing
 scheduling.**
 
-## Monitoring (MVP-appropriate, not enterprise APM)
+## Pre-scale audit of the 50-notice batch (2026-08-09)
+
+Before approving ingestion of the remaining 182 Hidalgo notices, four
+findings from the 50-notice batch report were investigated in depth.
+
+### 1. The "102 CAD requests" figure
+
+**Finding: this was a reporting mislabel, not a broken budget.** The
+batch report's "Total CAD requests: 657, max 102" metric was actually
+counting persisted `AppraisalPropertyCandidate` **rows** (deduplicated
+candidate properties returned), not live HTTP requests. Investigated by
+re-running `resolvePropertyAddress()` live against the real CAD adapter
+for the actual max-count case (HID-117948, 102 candidate rows), reusing
+its own already-stored notice evidence, with a fresh instrumented
+budget: the real call used only **8 of the 10 allowed real HTTP
+requests** (2 remaining unused) to produce the same 102 rows. The large
+row count comes from a subdivision/legal-description full-text search
+that couldn't narrow to a single lot and (correctly, per existing
+design) fell back to returning its full page-bounded result set (up to
+`HIDALGO_CAD_MAX_PAGES_PER_SEARCH` × `HIDALGO_CAD_PAGE_SIZE` = 5 × 20 =
+100 rows) rather than hiding a possible conflict — not a runaway loop.
+`HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE` (default 10, unset in the actual
+run) is enforced as a real hard ceiling shared across every search
+strategy and the valuation-history lookup for that notice (see
+`ingestForeclosureNotices.ts`'s `cadBudget`, decremented before every
+live page fetch in `hidalgoCadClient.ts`). **No code change made** —
+the cap was already working correctly. A follow-up worth considering
+(not implemented, no `PropertyResolutionAttempt.requestsUsed` column
+exists yet): persist the real per-notice `requestsUsed` figure so a
+future audit doesn't require a live re-call to answer this question.
+
+### 2. Honest borrower completeness
+
+Re-classified into three buckets instead of one: **47/50 (94.0%) real
+names**, **3/50 "Unknown owner" placeholder** (117932, 117933, 117959 —
+an existing, intentional fallback string set when no grantor/borrower
+name could be extracted at all — see `ingestForeclosureNotices.ts`),
+**0/50 truly null**. The prior report's 100% figure incorrectly counted
+the placeholder as successful extraction.
+
+**Fix applied**: added `formatBorrowerName()` in `apps/web/lib/utils.ts`
+and used it at the three investor-facing display sites (property
+detail, property list, county page) so both the placeholder and a
+genuinely missing name now render as **"Owner unavailable"** instead of
+the literal "Unknown owner" string, which read like an actual (if
+unusual) extracted name. Admin QA pages intentionally still show the
+raw value. Existing production rows were not backfilled in this pass.
+
+### 3. Missing original-principal root cause (31/50 = 38% completeness)
+
+Classified every missing case using its stored raw notice text:
+
+| Cause | Count | Detail |
+| --- | --- | --- |
+| B — stated, not parsed (fixed) | 24 | Recurring "ALAYNE CAVAZOS" trustee template: `Note[:] <spelled-out amount> DOLLARS ($X,XXX.XX)`, no "principal" label at all |
+| A — genuinely not stated | 6 | McCarthy & Holthus, LLP MERS key-value template structurally has no principal field |
+| B — stated, currency-parsing edge case | 1 | HID-117959: "$258.750.00" (extra period breaks the existing regex's decimal capture and the sanity floor nulls the mis-parsed $258.75) — single occurrence, not fixed (not recurring) |
+
+**Fix applied**: a sixth deterministic pattern was added to
+`matchOriginalPrincipal()` in
+`packages/foreclosure-core/src/extraction/deterministic/texasTemplates.ts`,
+anchored on `Note:?` … `DOLLARS ($X,XXX.XX)` with a bounded 120-char
+lookahead (can't reach across an unrelated later dollar mention). 3 new
+regression tests added; all 252 existing `foreclosure-core` tests still
+pass. This will recover principal automatically on future ingestion for
+this template; the 24 already-published null rows in this batch were
+not backfilled in this pass (a possible follow-up, not done here).
+
+### 4. What blocks USEFUL from FULLY USEFUL (36 cases)
+
+| Missing field | Cases | % of the 36 |
+| --- | --- | --- |
+| County valuation | 36 | 100% |
+| Original principal | 30 | 83% |
+| CAD confirmation | 28 | 78% |
+| Usable address | 28 | 78% |
+| Real owner name | 0 | 0% |
+| Legal description | 0 | 0% |
+| Sale date | 0 | 0% |
+
+Valuation availability (gated by CAD auto-confirmation) is the single
+universal blocker; borrower/legal-description/sale-date are already
+effectively saturated in this batch and not worth further investment.
+
+### Recommendation
+
+**A. SCALE GUARDS CONFIRMED — safe to process the remaining 182
+notices**, with the two narrow fixes above already applied. No property
+matching thresholds were touched; the 24% CAD-confirmed rate was left
+as-is per instruction (zero wrong parcels matters more than the
+enrichment percentage). **The remainder was not processed and
+scheduling remains OFF, per instruction — stopped and awaiting
+approval.**
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
   source health.
