@@ -1,0 +1,40 @@
+name: Hidalgo Diagnose HID-117888 (one-off)
+
+# ONE-OFF diagnostic: calls Anthropic tool-use exactly once against
+# HID-117888's stored rawText and prints the raw (unvalidated) response,
+# to root-cause why every one of 18 fields failed validation on the
+# second fresh-25 batch's one AI-fallback failure. Deleted after use.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Diagnose HID-117888
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.FORECLOSUREDATA_ANTHROPIC_API_KEY }}
+        run: pnpm --filter @foreclosuredata/web run diagnose:117888
