@@ -6,6 +6,7 @@ import { hasFullAccessToCounty, type PropertyValuationResult } from "@foreclosur
 import { getCurrentProfileId } from "@/lib/supabase/server";
 import { loadFieldEvidence } from "@/lib/extracted-fields";
 import { getAllValuations } from "@/lib/valuation";
+import { PUBLICATION_EXTRA_INCLUDE, isPubliclyVisible } from "@/lib/publicationVisibility";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ConfidenceBadge, EstimatedBadge } from "@/components/properties/confidence-badge";
@@ -29,9 +30,11 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
       county: true,
       appraisalValueHistory: { orderBy: { taxYear: "desc" }, take: 1 },
       foreclosureCases: {
+        where: { archivedAt: null },
         orderBy: { createdAt: "desc" },
         take: 1,
         include: {
+          ...PUBLICATION_EXTRA_INCLUDE,
           sales: { orderBy: { saleDate: "asc" }, include: { trustee: { include: { person: true, organization: true } } } },
           loan: { include: { currentMortgagee: true, originalLender: true, mortgageServicer: true } },
           borrower: true,
@@ -46,6 +49,11 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
 
   const fc = property.foreclosureCases[0];
   if (!fc) notFound();
+  // A property whose only (or most recent) non-archived case isn't
+  // publicly visible (pending an identity/conflict review, or missing a
+  // valid source notice) must 404 for a public visitor exactly like a
+  // nonexistent property would -- never render partial/unsafe detail.
+  if (!isPubliclyVisible({ ...fc, property })) notFound();
 
   const unlocked = hasFullAccessToCounty(entitlement, property.county.slug);
   const sale = fc.sales[fc.sales.length - 1];

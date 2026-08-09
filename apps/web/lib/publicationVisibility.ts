@@ -16,26 +16,59 @@
 import { Prisma } from "@prisma/client";
 import { computePublicationStatus, isPubliclyVisibleStatus, type PublicationInput, type PublicationResult } from "@foreclosuredata/foreclosure-core";
 
-/** Prisma `include` shape carrying exactly the fields computePublicationStatus() needs. Spread this into any ForeclosureCase query whose results will be shown to the public. */
-export const PUBLICATION_STATUS_INCLUDE = {
-  borrower: { select: { fullName: true } },
-  property: { select: { propertyStreetAddress: true, addressResolutionMethod: true, addressResolutionConfidence: true, subdivision: true, lot: true } },
+/**
+ * Additive Prisma `include` fragment for the relations
+ * computePublicationStatus() needs that a typical list/detail query doesn't
+ * already fetch (documents, legalDescriptions, manualReviewTasks,
+ * appraisalCandidates, duplicate links). Deliberately has zero key overlap
+ * with foreclosureCaseListInclude() in lib/properties.ts, so callers merge
+ * it in with a plain object spread without any relation-shape conflict --
+ * they keep whatever `property`/`sales`/`borrower` shape they already fetch
+ * (as long as it's at least as rich as PublicationFieldsSource below, which
+ * every existing caller's `true`/full-object fetch already is).
+ */
+export const PUBLICATION_EXTRA_INCLUDE = {
   legalDescriptions: { select: { id: true }, take: 1 },
   documents: { select: { id: true }, take: 1 },
-  sales: { select: { saleDate: true }, orderBy: { saleDate: "desc" as const }, take: 1 },
   manualReviewTasks: { where: { status: "OPEN" as const }, select: { reason: true } },
   appraisalCandidates: { where: { isSelected: true }, select: { id: true }, take: 1 },
   duplicateLinksAsCaseA: { where: { status: "OPEN" as const, confidence: { in: ["CONFIRMED_SAME_EVENT" as const, "LIKELY_SAME_EVENT" as const] } }, select: { id: true }, take: 1 },
   duplicateLinksAsCaseB: { where: { status: "OPEN" as const, confidence: { in: ["CONFIRMED_SAME_EVENT" as const, "LIKELY_SAME_EVENT" as const] } }, select: { id: true }, take: 1 },
 } satisfies Prisma.ForeclosureCaseInclude;
 
-type CaseWithPublicationFields = Prisma.ForeclosureCaseGetPayload<{ include: typeof PUBLICATION_STATUS_INCLUDE }> & { archivedAt: Date | null };
+/** For a caller that ONLY needs publication status (e.g. an admin dashboard summarizing readiness) and doesn't already have a richer include. */
+export const PUBLICATION_STATUS_INCLUDE = {
+  ...PUBLICATION_EXTRA_INCLUDE,
+  borrower: { select: { fullName: true } },
+  property: { select: { propertyStreetAddress: true, addressResolutionMethod: true, addressResolutionConfidence: true, subdivision: true, lot: true } },
+  sales: { select: { saleDate: true } },
+} satisfies Prisma.ForeclosureCaseInclude;
 
-export function toPublicationInput(c: CaseWithPublicationFields): PublicationInput {
+/**
+ * The minimal structural shape computePublicationStatus() needs -- declared
+ * independently of any specific Prisma `include`, so any caller's richer
+ * fetch (full `property: true`, full `sales`, full `borrower`, etc., plus
+ * PUBLICATION_EXTRA_INCLUDE's relations) satisfies it without a cast.
+ */
+export interface PublicationFieldsSource {
+  archivedAt: Date | null;
+  documents: unknown[];
+  sales: Array<{ saleDate: Date | null }>;
+  borrower: { fullName: string } | null;
+  property: { propertyStreetAddress: string | null; addressResolutionMethod: string; addressResolutionConfidence: number | null; subdivision: string | null; lot: string | null } | null;
+  legalDescriptions: unknown[];
+  appraisalCandidates: unknown[]; // must already be filtered to isSelected: true by the query
+  manualReviewTasks: Array<{ reason: string }>; // must already be filtered to status: OPEN by the query
+  duplicateLinksAsCaseA: unknown[]; // must already be filtered to OPEN + CONFIRMED/LIKELY by the query
+  duplicateLinksAsCaseB: unknown[];
+}
+
+export function toPublicationInput(c: PublicationFieldsSource): PublicationInput {
+  const saleDate = c.sales.find((s) => s.saleDate !== null)?.saleDate ?? null;
   return {
     archivedAt: c.archivedAt,
     hasSourceDocument: c.documents.length > 0,
-    saleDate: c.sales[0]?.saleDate ?? null,
+    saleDate,
     borrowerName: c.borrower?.fullName ?? null,
     propertyStreetAddress: c.property?.propertyStreetAddress ?? null,
     addressResolutionMethod: c.property?.addressResolutionMethod ?? null,
@@ -47,15 +80,15 @@ export function toPublicationInput(c: CaseWithPublicationFields): PublicationInp
   };
 }
 
-export function getPublicationStatus(c: CaseWithPublicationFields): PublicationResult {
+export function getPublicationStatus(c: PublicationFieldsSource): PublicationResult {
   return computePublicationStatus(toPublicationInput(c));
 }
 
-export function isPubliclyVisible(c: CaseWithPublicationFields): boolean {
+export function isPubliclyVisible(c: PublicationFieldsSource): boolean {
   return isPubliclyVisibleStatus(getPublicationStatus(c).status);
 }
 
-/** Filters a fetched case array down to the publicly-visible subset. Use when the query couldn't pre-filter with archivedAt: null alone (i.e. always, since publication status depends on more than one column). */
-export function filterPublic<T extends CaseWithPublicationFields>(cases: T[]): T[] {
+/** Filters a fetched case array down to the publicly-visible subset. Always required -- archivedAt: null alone is not sufficient, since publication status depends on manual-review/duplicate-link/identity state too. */
+export function filterPublic<T extends PublicationFieldsSource>(cases: T[]): T[] {
   return cases.filter(isPubliclyVisible);
 }

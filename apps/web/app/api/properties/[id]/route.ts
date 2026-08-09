@@ -4,6 +4,7 @@ import { resolveEntitlement } from "@foreclosuredata/auth/entitlement";
 import { hasFullAccessToCounty } from "@foreclosuredata/types";
 import { getCurrentProfileId } from "@/lib/supabase/server";
 import { loadFieldEvidence } from "@/lib/extracted-fields";
+import { PUBLICATION_EXTRA_INCLUDE, isPubliclyVisible } from "@/lib/publicationVisibility";
 
 export async function GET(_request: Request, { params }: { params: { id: string } }) {
   const profileId = await getCurrentProfileId();
@@ -14,9 +15,11 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     include: {
       county: true,
       foreclosureCases: {
+        where: { archivedAt: null },
         orderBy: { createdAt: "desc" },
         take: 1,
         include: {
+          ...PUBLICATION_EXTRA_INCLUDE,
           sales: { orderBy: { saleDate: "asc" } },
           loan: { include: { currentMortgagee: true, originalLender: true } },
           borrower: true,
@@ -29,6 +32,9 @@ export async function GET(_request: Request, { params }: { params: { id: string 
 
   const fc = property.foreclosureCases[0];
   if (!fc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // See lib/publicationVisibility.ts -- a case that isn't publicly visible
+  // must 404 exactly like a nonexistent property, never leak partial data.
+  if (!isPubliclyVisible({ ...fc, property })) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const unlocked = hasFullAccessToCounty(entitlement, property.county.slug);
   const sale = fc.sales[fc.sales.length - 1];

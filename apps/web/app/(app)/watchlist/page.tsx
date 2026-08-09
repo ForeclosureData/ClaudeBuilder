@@ -7,6 +7,7 @@ import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
 import { saleStatusLabels } from "@foreclosuredata/config";
+import { PUBLICATION_EXTRA_INCLUDE, isPubliclyVisible } from "@/lib/publicationVisibility";
 
 export default async function WatchlistPage() {
   const profileId = await getCurrentProfileId();
@@ -16,7 +17,10 @@ export default async function WatchlistPage() {
     where: { profileId },
     include: {
       property: {
-        include: { county: true, foreclosureCases: { orderBy: { createdAt: "desc" }, take: 1, include: { sales: { orderBy: { saleDate: "asc" }, take: 1 } } } },
+        include: {
+          county: true,
+          foreclosureCases: { where: { archivedAt: null }, orderBy: { createdAt: "desc" }, take: 1, include: { borrower: true, sales: { orderBy: { saleDate: "asc" } }, ...PUBLICATION_EXTRA_INCLUDE } },
+        },
       },
     },
     orderBy: { createdAt: "desc" },
@@ -33,16 +37,27 @@ export default async function WatchlistPage() {
           <Tbody>
             {saved.map((s) => {
               const fc = s.property.foreclosureCases[0];
+              const visible = fc ? isPubliclyVisible({ ...fc, property: s.property }) : false;
               return (
                 <Tr key={s.id}>
                   <Td>
-                    <Link href={`/properties/${s.property.id}`} className="text-brand-600 hover:underline dark:text-brand-400">
-                      {s.property.propertyStreetAddress ?? `${s.property.city ?? "Address pending review"}`}
-                    </Link>
+                    {visible ? (
+                      <Link href={`/properties/${s.property.id}`} className="text-brand-600 hover:underline dark:text-brand-400">
+                        {s.property.propertyStreetAddress ?? `${s.property.city ?? "Address pending review"}`}
+                      </Link>
+                    ) : (
+                      <span className="text-neutral-500">{s.property.propertyStreetAddress ?? s.property.city ?? "Saved property"}</span>
+                    )}
                   </Td>
                   <Td>{s.property.county.name}</Td>
                   <Td>{formatDate(fc?.sales[0]?.saleDate?.toISOString() ?? null)}</Td>
-                  <Td>{fc && <Badge tone={fc.status === "CANCELED" ? "danger" : "success"}>{saleStatusLabels[fc.status]}</Badge>}</Td>
+                  <Td>
+                    {visible && fc ? (
+                      <Badge tone={fc.status === "CANCELED" ? "danger" : "success"}>{saleStatusLabels[fc.status]}</Badge>
+                    ) : (
+                      <Badge tone="neutral">No longer available</Badge>
+                    )}
+                  </Td>
                 </Tr>
               );
             })}

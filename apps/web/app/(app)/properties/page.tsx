@@ -3,7 +3,7 @@ import { prisma } from "@foreclosuredata/database";
 import { resolveEntitlement } from "@foreclosuredata/auth/entitlement";
 import { hasFullAccessToCounty } from "@foreclosuredata/types";
 import { getCurrentProfileId } from "@/lib/supabase/server";
-import { buildForeclosureCaseWhere, foreclosureCaseListInclude } from "@/lib/properties";
+import { getPublicForeclosureCases } from "@/lib/properties";
 import { PropertyFilters } from "@/components/properties/property-filters";
 import { ConfidenceBadge } from "@/components/properties/confidence-badge";
 import { EmptyState } from "@/components/properties/empty-state";
@@ -31,31 +31,23 @@ export default async function PropertiesPage({ searchParams }: { searchParams: R
 
   const counties = await prisma.county.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
 
-  const where = buildForeclosureCaseWhere({
-    countySlug: searchParams.countySlug,
-    city: searchParams.city,
-    zipCode: searchParams.zipCode,
-    propertyType: searchParams.propertyType,
-    classification: searchParams.classification as "RESIDENTIAL" | "COMMERCIAL" | undefined,
-    borrowerSearch: searchParams.borrowerSearch,
-    lenderSearch: searchParams.lenderSearch,
-    saleDateFrom: searchParams.saleDateFrom,
-    saleDateTo: searchParams.saleDateTo,
-    manualReviewStatus: searchParams.manualReviewStatus as never,
-    savedOnly: searchParams.savedOnly === "true",
-    profileId,
-  });
-
-  const [cases, totalCount] = await Promise.all([
-    prisma.foreclosureCase.findMany({
-      where,
-      include: foreclosureCaseListInclude(),
-      orderBy: { sales: { _count: "desc" } },
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-    }),
-    prisma.foreclosureCase.count({ where }),
-  ]);
+  const { cases, totalCount } = await getPublicForeclosureCases(
+    {
+      countySlug: searchParams.countySlug,
+      city: searchParams.city,
+      zipCode: searchParams.zipCode,
+      propertyType: searchParams.propertyType,
+      classification: searchParams.classification as "RESIDENTIAL" | "COMMERCIAL" | undefined,
+      borrowerSearch: searchParams.borrowerSearch,
+      lenderSearch: searchParams.lenderSearch,
+      saleDateFrom: searchParams.saleDateFrom,
+      saleDateTo: searchParams.saleDateTo,
+      manualReviewStatus: searchParams.manualReviewStatus as never,
+      savedOnly: searchParams.savedOnly === "true",
+      profileId,
+    },
+    { skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE },
+  );
 
   const savedPropertyIds = profileId
     ? new Set((await prisma.savedProperty.findMany({ where: { profileId }, select: { propertyId: true } })).map((s) => s.propertyId))

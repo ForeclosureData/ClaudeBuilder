@@ -3,7 +3,7 @@ import { prisma } from "@foreclosuredata/database";
 import { resolveEntitlement } from "@foreclosuredata/auth/entitlement";
 import { hasFullAccessToCounty } from "@foreclosuredata/types";
 import { getCurrentProfileId } from "@/lib/supabase/server";
-import { buildForeclosureCaseWhere, foreclosureCaseListInclude } from "@/lib/properties";
+import { getPublicForeclosureCases } from "@/lib/properties";
 import { toCsv } from "@/lib/csv";
 
 /** Exports every record matching the current filters that the caller's entitlement can see. */
@@ -22,13 +22,14 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const where = buildForeclosureCaseWhere({
-    countySlug: searchParams.get("countySlug") ?? undefined,
-    city: searchParams.get("city") ?? undefined,
-    profileId,
-  });
-
-  const cases = await prisma.foreclosureCase.findMany({ where, include: foreclosureCaseListInclude(), take: 5000 });
+  const { cases } = await getPublicForeclosureCases(
+    {
+      countySlug: searchParams.get("countySlug") ?? undefined,
+      city: searchParams.get("city") ?? undefined,
+      profileId,
+    },
+    { take: 5000 },
+  );
   const rows = cases
     .filter((fc) => hasFullAccessToCounty(entitlement, fc.county.slug))
     .map((fc) => ({

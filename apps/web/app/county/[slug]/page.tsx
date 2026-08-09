@@ -5,7 +5,7 @@ import { hasFullAccessToCounty } from "@foreclosuredata/types";
 import { resolveEntitlement } from "@foreclosuredata/auth/entitlement";
 import { getCurrentProfileId } from "@/lib/supabase/server";
 import { getCountyStats } from "@/lib/county-stats";
-import { buildForeclosureCaseWhere, foreclosureCaseListInclude } from "@/lib/properties";
+import { getPublicForeclosureCases } from "@/lib/properties";
 import { EmptyState } from "@/components/properties/empty-state";
 import { RequestCountyForm } from "@/components/search/request-county-form";
 import { Card, CardContent } from "@/components/ui/card";
@@ -27,12 +27,7 @@ export default async function CountyPage({ params }: { params: { slug: string } 
 
   const stats = await getCountyStats(county.id);
 
-  const cases = await prisma.foreclosureCase.findMany({
-    where: buildForeclosureCaseWhere({ countySlug: county.slug }),
-    include: foreclosureCaseListInclude(),
-    orderBy: { sales: { _count: "desc" } },
-    take: unlocked ? 50 : 8,
-  });
+  const { cases } = await getPublicForeclosureCases({ countySlug: county.slug }, { take: unlocked ? 50 : 8 });
 
   return (
     <div className="container-page py-10">

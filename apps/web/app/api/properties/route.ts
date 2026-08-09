@@ -3,7 +3,7 @@ import { prisma } from "@foreclosuredata/database";
 import { propertyFilterSchema } from "@foreclosuredata/validation";
 import { resolveEntitlement } from "@foreclosuredata/auth/entitlement";
 import { getCurrentProfileId } from "@/lib/supabase/server";
-import { buildForeclosureCaseWhere, foreclosureCaseListInclude } from "@/lib/properties";
+import { getPublicForeclosureCases } from "@/lib/properties";
 import { checkRateLimit, clientIpFrom } from "@/lib/rate-limit";
 
 export async function GET(request: Request) {
@@ -31,17 +31,7 @@ export async function GET(request: Request) {
   const entitlement = await resolveEntitlement(profileId);
   const effectivePageSize = entitlement.plan === "FREE" ? Math.min(pageSize, 20) : pageSize;
 
-  const where = buildForeclosureCaseWhere({ ...filters, profileId });
-
-  const [cases, totalCount] = await Promise.all([
-    prisma.foreclosureCase.findMany({
-      where,
-      include: foreclosureCaseListInclude(),
-      skip: (page - 1) * effectivePageSize,
-      take: effectivePageSize,
-    }),
-    prisma.foreclosureCase.count({ where }),
-  ]);
+  const { cases, totalCount } = await getPublicForeclosureCases({ ...filters, profileId }, { skip: (page - 1) * effectivePageSize, take: effectivePageSize });
 
   const savedPropertyIds = profileId
     ? new Set((await prisma.savedProperty.findMany({ where: { profileId }, select: { propertyId: true } })).map((s) => s.propertyId))

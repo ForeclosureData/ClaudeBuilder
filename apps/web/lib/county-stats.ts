@@ -1,4 +1,5 @@
 import { prisma } from "@foreclosuredata/database";
+import { PUBLICATION_EXTRA_INCLUDE, filterPublic } from "@/lib/publicationVisibility";
 
 export interface CountyStats {
   upcomingCount: number;
@@ -10,12 +11,13 @@ export interface CountyStats {
   newestNoticeAt: string | null;
 }
 
-/** Public, cheap aggregate stats for a county's landing page — no per-record details, safe to show without an account. */
+/** Public, cheap aggregate stats for a county's landing page — no per-record details, safe to show without an account. Only counts publicly-visible cases (see lib/publicationVisibility.ts) -- a PENDING_REVIEW or archived case must never inflate this number. */
 export async function getCountyStats(countyId: string): Promise<CountyStats> {
-  const cases = await prisma.foreclosureCase.findMany({
-    where: { countyId, status: { in: ["SCHEDULED", "POSTPONED"] } },
-    include: { property: true, sales: { orderBy: { saleDate: "asc" }, take: 1 } },
+  const all = await prisma.foreclosureCase.findMany({
+    where: { countyId, status: { in: ["SCHEDULED", "POSTPONED"] }, archivedAt: null },
+    include: { property: true, borrower: true, sales: { orderBy: { saleDate: "asc" } }, ...PUBLICATION_EXTRA_INCLUDE },
   });
+  const cases = filterPublic(all);
 
   const upcomingCount = cases.length;
   const appraised = cases.map((c) => c.property?.appraisedValueCents).filter((v): v is number => typeof v === "number");
