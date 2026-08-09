@@ -48,3 +48,6 @@ export type { CanonicalCandidateInput, CanonicalSelectionResult, ScoredCanonical
 
 export { scoreDuplicateEvidence, rawTextFingerprintSimilarity } from "./duplicateDetection/scoring";
 export type { DuplicateComparisonCaseSnapshot, DuplicateConfidence, DuplicateEvidenceResult } from "./duplicateDetection/scoring";
+
+export { computePublicationStatus, isPubliclyVisibleStatus, CRITICAL_BLOCKER_REVIEW_REASONS, NON_BLOCKING_REVIEW_REASONS } from "./publication/publicationStatus";
+export type { PublicationStatus, PublicationInput, PublicationResult } from "./publication/publicationStatus";
