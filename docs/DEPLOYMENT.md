@@ -1332,6 +1332,234 @@ re-confirmed here that what's now in production matches what was checked.
 **Phase 1 verified clean, zero regressions -- proceeding to Phase 2 per
 the approved two-phase plan.**
 
+## Phase 2: Second fresh 25-notice generalization batch (2026-08-09)
+
+Tests whether the extraction repair (and its Phase 1 backfill) generalizes
+to notices it has never seen, using the current production pipeline
+unmodified. Same bundle (posting `72861`, hash `b9f13759...`, confirmed
+identical to Phase 1/the original test), `maxNoticesPerBundle=50` so the
+adapter re-scans past the first 25 (already-known duplicates, skipped
+before extraction runs) to reach the next 25.
+
+### Selection (proven before ingestion)
+
+A dry run
+([31294887866](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31294887866))
+listed every filing number in bundle-page order and checked each against
+the database (read-only, no writes) *before* any production spend:
+
+- 50 notices scanned, 25 already ingested (exact match to the first
+  fresh-25 batch's filing numbers -- confirms the bundle and ordering are
+  unchanged), **25 genuinely new** (confirmed absent from the database,
+  not just absent from a numeric-range assumption -- these fall partly
+  *within* the 82-baseline's stated 117716-118236 span, which only proves
+  that span was never fully contiguous, not that these particular numbers
+  were already used).
+
+**Selected filing numbers**: `117718, 117719, 117721, 117729, 117731,
+117886, 117887, 117888, 117891, 117892, 117896, 117908, 117909, 117913,
+117914, 117915, 117916, 117917, 117919, 117921, 117922, 117923, 117924,
+117926, 117930`.
+
+The real bounded production run
+([31295126506](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31295126506))
+confirmed this exactly: **25 records created, 25 duplicates skipped, 0
+failed** -- no more and no fewer than the 25 approved.
+
+### Extraction metrics
+
+| | |
+|---|---|
+| Notices attempted | 25 |
+| Successfully ingested | 25 |
+| Failed (unexpected error) | 0 |
+| Duplicates skipped | 25 |
+| OCR success rate | 100% |
+| Average OCR confidence | 91.2 |
+| Borrower/grantor extraction success | 21 / 25 (84%) |
+| Original-principal extraction success | 19 / 25 (76%) |
+| Lender/mortgagee extraction success | 24 / 25 (96%) |
+| Mortgage servicer extraction success | 17 / 25 (68%) |
+| Sale-date extraction success | 22 / 25 (88%) |
+| Legal-description extraction success | 22 / 25 (88%) |
+| Usable property address | 22 / 25 (88%) |
+| AI fallback calls | 9 / 25 (36%) |
+| AI calls schema-valid | 9 / 9 (100%) |
+| AI calls with ≥1 useful field | **8 / 9 (89%)** |
+| Anthropic spend | $0.60 |
+| Cost per useful AI call | $0.075 |
+
+A transient Postgres connection drop occurred mid-run (`FATAL: terminating
+connection due to administrator command`) -- self-recovered, 0 notices
+lost, final counts unaffected; noted for completeness, not a code issue.
+
+### Investor completeness
+
+Same rubric as Phase 1 (lender not required for FULLY USEFUL; county
+valuation only required when CAD-confirmed):
+
+| Classification | Count | % |
+|---|---|---|
+| FULLY USEFUL | 8 | 32% |
+| USEFUL | 13 | 52% |
+| LIMITED | 4 | 16% |
+
+### Property-resolution metrics
+
+| | Count |
+|---|---|
+| Usable address (notice-stated + CAD-inferred) | 22 / 25 |
+| Notice-stated address | 15 |
+| **CAD parcel confirmed** | **7** |
+| Structural no-address (no Property record) | 3 |
+| Manual-review tasks (any reason) | 16 / 25 (64%) |
+| — Genuinely ambiguous (`MULTIPLE_APPRAISAL_MATCHES`) | 9 |
+| — Structural no-address (`NO_ADDRESS_RESOLVED`) | 3 |
+| — Owner-conflict (`CAD_OWNER_CONFLICT`) | 1 |
+| — Extraction-quality (`BORROWER_NAME_CONFLICT` / `SALE_DATE_CONFLICT`) | 4 / 3 |
+
+Total CAD request count/timing still isn't surfaced by the live
+pipeline's logging (same pre-existing observability gap noted in the
+first fresh-25 test) -- not re-estimated here.
+
+### Safety verification: all 7 CAD-confirmed parcels (100%, not a sample)
+
+| Filing # | Notice subdivision/lot/owner | CAD subdivision/lot/owner | Verdict |
+|---|---|---|---|
+| 117886 | NORTHWEST MANOR / 30 / Carlos Garza Jr | NORTHWEST MANOR / 30 / GARZA CARLOS JR | **CONFIRMED CORRECT** |
+| 117887 | EMERALD CITY ESTATES / 31 / Maritza Magallan | EMERALD CITY ESTATES / 31 / MAGALLAN MARITZA | **CONFIRMED CORRECT** |
+| 117891 | ALTON POINTE PH 1 / 24 / Claudia R Olvera | ALTON POINTE / 24 / OLVERA CLAUDIA R | **CONFIRMED CORRECT** |
+| 117914 | TAURUS ESTATES / 72 / "CHRISTOPHER D" (notice extraction truncated -- see below) | TAURUS ESTATES / 72 / MUNIZ CHRISTOPHER D | **CONFIRMED CORRECT** (address/subdivision/lot agree exactly; CAD's full name confirms the match is the right property/person despite the notice-side extraction defect) |
+| 117916 | WOODLAND HEIGHTS UT 3 / 189 / Dimas Garcia Jr, Cristal A. Rangel Vazquez | WOODLAND HEIGHTS / 189 / GARCIA DIMAS JR & CRISTAL A RANGEL VASQUEZ | **CONFIRMED CORRECT** |
+| 117924 | (property ID match) / IBRAHIM UNITED LLC | C AND S 23-25 / IBRAHIM UNITED LLC | **CONFIRMED CORRECT** (exact entity-name + address match, strongest match type) |
+| 117926 | TAYLOR RIDGE / 4 / Cristela Riojas | TAYLOR RIDGE / 4 / RIOJAS CRISTELA | **CONFIRMED CORRECT** |
+
+**Observed false-match rate: 0 / 7 (0%).** Zero INCORRECT classifications
+-- the "stop and report" condition was not triggered.
+
+### Safety verification: every AI-recovered borrower/principal (100%, not a sample)
+
+8 of 9 AI-fallback calls recovered ≥1 useful field; all recovered
+borrower/principal values checked against source `rawText`:
+
+| Filing # | AI-recovered value | Verdict |
+|---|---|---|
+| 117887 borrower | Maritza Magallan | CONFIRMED CORRECT |
+| 117891 borrower + principal | Claudia R Olvera / $136,800.00 | CONFIRMED CORRECT |
+| 117892 borrower + principal | Fernando Guerra / $116,000.00 | CONFIRMED CORRECT |
+| 117915 borrower + principal | Jose Rolando Lorenzana, Oneida M. Lorenzana / $36,756.26 | CONFIRMED CORRECT |
+| 117916 borrower + principal | Dimas Garcia Jr, Cristal A. Rangel Vazquez / $26,500.00 | CONFIRMED CORRECT -- source is OCR-garbled ("Amount: Twenty-Six Thousand Five Hundred and No/100ths Dollars (826,500.00)", the numeral misread as "8" instead of "$"), but the spelled-out dollar amount is unambiguous and AI correctly used it rather than the corrupted numeral |
+| 117924 borrower + principal | Ibrahim United LLC / $400,000.00 | CONFIRMED CORRECT |
+| 117926 borrower + principal | Cristela Riojas / $235,000.00 | CONFIRMED CORRECT |
+| 117914 principal | $59,984.74 | CONFIRMED CORRECT (AI recovered principal correctly; borrower stayed at the deterministic layer's truncated value -- see finding below) |
+
+**Zero fabrications** -- every AI-recovered value traces to real text in
+its notice.
+
+### Findings: three real, novel issues surfaced by fresh data
+
+None of these are regressions of the extraction repair (which itself
+generalized well -- see above); each is a new edge case this specific
+batch happened to contain.
+
+1. **HID-117888: total extraction failure (0/18 AI fields, deterministic
+   also empty).** A previously-unseen narrative template
+   ("PURSUANT TO AUTHORITY conferred upon the Trustee by that certain
+   Deed of Trust dated..., executed by NAME... ("Mortgagor")") states the
+   borrower names in the text (`LORRAINE RODRIGUEZ` and
+   `OLIVIA MUNOZ VARGAS A/K/A OLIVIA M. VARGAS`), but neither the
+   deterministic parser nor the AI tool-use call recovered anything --
+   the AI call's error was "No fields passed validation" (all 18 fields,
+   not just the usual two), which is a different failure signature than
+   the bug already fixed and warrants separate investigation before it's
+   trusted at larger scale.
+2. **HID-117914: truncated borrower name, second occurrence of the
+   confidence-trust gap already found once (HID-117707's suffix-split).**
+   The real text reads "Original Mortgagor/Grantor: CHRISTOPHER D.
+   MUNIZ AND MAYRA C. MARTINEZ" across a line wrap right after the middle
+   initial's period; the deterministic parser captured only "CHRISTOPHER
+   D" -- dropping the surname and the entire second borrower -- with
+   confidence high enough (≥0.6) that `mergePreferringNonNull` never let
+   AI's own, separately-run extraction correct it. Same root architecture
+   issue as the Jr.-suffix bug from the extraction-repair task, different
+   trigger (a line-wrap immediately after a middle-initial period rather
+   than a suffix comma) -- worth a similarly-scoped, evidence-backed fix.
+3. **HID-117729 / HID-117731: the same real-world notice under two
+   different county filing numbers.** Identical servicer TS# (`2025-20182-
+   TX`), property (`900 N 36TH STREET, MCALLEN, TX`), Deed of Trust date,
+   recording instrument, borrower, and principal ($98,385.00) -- the only
+   differences between the two stored `rawText` values are OCR noise on
+   otherwise-identical source characters. Both received distinct, valid
+   county filing numbers, so the existing `(countyId, countyFilingNumber)`
+   identity/dedup scheme -- by design, since a county filing number *is*
+   the county's own official identity -- did not and was not expected to
+   catch this. This is a different class of problem than extraction
+   (content-level duplicate detection across distinct official numbers),
+   out of this task's scope to fix, but real enough that both records are
+   now live and would display as two separate listings for the same
+   property.
+
+### Coverage accounting
+
+| | |
+|---|---|
+| Total detected notices in the Hidalgo bundle | 282 (unchanged) |
+| Unique notices ingested before this run (82 baseline + 25 fresh-1) | 107 |
+| Unique notices ingested after this run (+25 fresh-2) | **132** |
+| Estimated notices remaining | ~150 |
+| **Ingestion coverage** | **132 / 282 = 46.8%** |
+
+Kept distinct from CAD enrichment: of the 132 ingested cases, 40 now have
+a CAD-confirmed parcel (26 baseline + 7 fresh-1 + 7 fresh-2).
+
+### Comparison: first fresh 25 vs. second fresh 25
+
+| Dimension | First fresh 25 (post-fix) | Second fresh 25 |
+|---|---|---|
+| Borrower/grantor completeness | 96% | 84% |
+| Original-principal completeness | 84% | 76% |
+| Usable-address rate | 68% | 88% |
+| FULLY USEFUL rate | 40% | 32% |
+| AI fallback rate | 36% (9/25) | 36% (9/25) |
+| AI useful-call rate | 100% (9/9) | 89% (8/9) |
+| CAD-confirmed parcel rate | 28% (7/25) | 28% (7/25) |
+| Manual-review rate | 76% (19/25) | 64% (16/25) |
+| False-match rate (CAD safety) | 0% (0/7) | 0% (0/7) |
+| Anthropic cost per notice | $0.0236 | $0.024 |
+
+**Reading**: the fix generalizes -- AI fallback rate, CAD-confirmed rate,
+and per-notice AI cost are nearly identical across two independently-
+selected batches from the same source (a good sign the earlier batch's
+results weren't a fluke), CAD safety held at a clean 0% false-match rate
+in both, and manual-review load actually improved. Borrower/principal
+completeness and the AI useful-call rate are both slightly lower in the
+second batch -- fully explained by the three findings above (one total
+failure, one confidence-trust truncation, both narrow and root-caused),
+not a diffuse quality regression.
+
+### Final decision
+
+**B. ONE MORE TARGETED FIX REQUIRED.**
+
+The core repair generalized well: AI fallback and CAD-confirmation rates
+matched the first batch almost exactly, zero fabrications, zero false CAD
+matches across 7/7 manually verified parcels, manual-review load
+improved. But this batch surfaced two real, previously-unseen extraction
+defects (HID-117888's total 0/18 AI failure on a new template; HID-
+117914's line-wrap name truncation -- the same confidence-trust
+architecture gap as the already-fixed Jr.-suffix bug, now confirmed to
+have a second trigger) plus one out-of-scope but real content-duplicate
+finding (HID-117729/117731). None of these are systemic -- they're
+narrow, evidence-backed, and each maps to a specific, scoped fix, the
+same pattern every earlier round in this project has used successfully.
+That's a "one more fix" result, not "safe to scale unbounded" (A) and not
+"pervasive quality issues" (C).
+
+**Per the approved scope, no further notices beyond these 25 were
+processed and scheduling remains OFF. This effort stops here and awaits
+explicit approval before any further ingestion, the next targeted fix,
+or a scheduling change.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
