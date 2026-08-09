@@ -1,0 +1,60 @@
+name: Hidalgo Extraction Backfill (25-notice, Phase 1)
+
+# Phase 1 of the approved extraction-repair rollout (2026-08-09): backfills
+# corrected extraction results onto the same 25 already-ingested fresh-test
+# notices, using their existing stored rawText. No new ForeclosureCase/
+# SourceDocument rows. Defaults to a dry run (no writes) -- pass
+# dry_run=false explicitly to perform real writes, only after reviewing a
+# dry-run's output.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true (default), compute and report changes without writing anything."
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Run foreclosure-core test suite
+        run: pnpm --filter @foreclosuredata/foreclosure-core test
+
+      - name: Backfill extraction onto the same 25 notices
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.FORECLOSUREDATA_ANTHROPIC_API_KEY }}
+          BACKFILL_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: pnpm --filter @foreclosuredata/web run backfill:extraction25

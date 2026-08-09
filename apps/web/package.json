@@ -14,7 +14,8 @@
     "verify:118198": "tsx scripts/verify-118198.mts",
     "regenerate:remaining-72": "tsx scripts/regenerate-remaining-72.mts",
     "regenerate:118198": "tsx scripts/regenerate-118198.mts",
-    "repair:extraction25": "tsx scripts/repair-extraction-25.mts"
+    "repair:extraction25": "tsx scripts/repair-extraction-25.mts",
+    "backfill:extraction25": "tsx scripts/backfill-extraction-25.mts"
   },
   "dependencies": {
     "@netlify/database": "^1.0.0",
