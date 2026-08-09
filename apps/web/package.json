@@ -12,7 +12,8 @@
     "ingest:hidalgo:ci": "tsx scripts/ci-ingest-hidalgo.mts",
     "pilot:regenerate-10": "tsx scripts/pilot-regenerate-10.mts",
     "verify:118198": "tsx scripts/verify-118198.mts",
-    "regenerate:remaining-72": "tsx scripts/regenerate-remaining-72.mts"
+    "regenerate:remaining-72": "tsx scripts/regenerate-remaining-72.mts",
+    "regenerate:118198": "tsx scripts/regenerate-118198.mts"
   },
   "dependencies": {
     "@netlify/database": "^1.0.0",

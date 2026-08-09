@@ -1,0 +1,45 @@
+name: Hidalgo CAD Regeneration Closeout (HID-118198)
+
+# One-off, manually-triggered: closes the gap left by the pilot, where
+# HID-118198 errored (pre-fix sanitizer) and was never actually
+# reprocessed with real writes. Run only after two read-only verification
+# passes (hidalgo-verify-118198.yml) confirmed it's safe. Same shared,
+# already-verified per-case logic as the pilot and the 72-case bulk run.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Regenerate HID-118198
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run regenerate:118198
