@@ -1,0 +1,44 @@
+name: Hidalgo Batch Report
+
+# Reusable, read-only reporting workflow for any Hidalgo ingestion batch
+# (and the final full-bundle reconciliation). Makes zero database writes
+# and zero Anthropic API calls. See apps/web/scripts/ci-report-batch.mts.
+on:
+  workflow_dispatch:
+    inputs:
+      target_filing_numbers:
+        description: "Comma-separated filing numbers to report on. Leave blank to report on ALL non-archived ForeclosureCase rows (final reconciliation)."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run batch report (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          TARGET_FILING_NUMBERS: ${{ inputs.target_filing_numbers }}
+        run: pnpm --filter @foreclosuredata/web run report:hidalgo-batch:ci

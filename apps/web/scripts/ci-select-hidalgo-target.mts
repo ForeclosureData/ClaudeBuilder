@@ -92,6 +92,21 @@ async function main() {
   console.log(`Unique non-null county filing numbers currently ingested: ${existingFilingNumbers.size}`);
   console.log(`Legacy seed dataset filing numbers (excluded regardless of DB column state): ${legacySeedFilingNumbers.size}`);
 
+  const dupGroups: Array<{ countyFilingNumber: string | null; count: bigint }> = await prisma.$queryRaw`
+    SELECT county_filing_number as "countyFilingNumber", COUNT(*) as count
+    FROM foreclosure_cases
+    WHERE archived_at IS NULL AND county_filing_number IS NOT NULL
+    GROUP BY county_filing_number
+    HAVING COUNT(*) > 1
+  `;
+  const processingJobCount = await prisma.processingJob.count();
+  const manualReviewOpenCount = await prisma.manualReviewTask.count({ where: { status: "OPEN" } });
+  const duplicateLinkCount = await prisma.possibleDuplicateNoticeLink.count();
+  console.log(`Duplicate (countyId, countyFilingNumber) groups: ${dupGroups.length}${dupGroups.length ? " -> " + JSON.stringify(dupGroups.map((d) => ({ ...d, count: Number(d.count) }))) : ""}`);
+  console.log(`ProcessingJob rows (all statuses): ${processingJobCount}`);
+  console.log(`ManualReviewTask rows with status OPEN: ${manualReviewOpenCount}`);
+  console.log(`PossibleDuplicateNoticeLink rows: ${duplicateLinkCount}`);
+
   // Step 2: discover bundle posting(s) -- same discovery call the dry-run
   // and production modes use.
   const postings = await discoverPropertySalePostings();
