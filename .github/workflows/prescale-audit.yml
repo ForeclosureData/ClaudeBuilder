@@ -1,0 +1,42 @@
+name: Pre-Scale Audit (50-Notice Batch)
+
+# One-off audit workflow answering the pre-scale-up investigation
+# questions on the just-completed bounded 50-notice Hidalgo batch: CAD
+# request-budget enforcement, honest borrower completeness, missing-
+# principal root causes, and USEFUL-vs-FULLY-USEFUL blockers. Read-only
+# except for exactly one live re-resolution call against the real Hidalgo
+# CAD adapter (zero database writes). See
+# apps/web/scripts/ci-prescale-audit.mts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run pre-scale audit
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run prescale-audit:ci
