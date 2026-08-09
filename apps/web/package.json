@@ -15,6 +15,7 @@
     "reconcile:hidalgo-legacy:ci": "tsx scripts/ci-reconcile-legacy.mts",
     "cleanup:hidalgo-legacy:ci": "tsx scripts/ci-cleanup-legacy-duplicates.mts",
     "report:publication-status:ci": "tsx scripts/ci-report-publication-status.mts",
+    "triage:review-backlog:ci": "tsx scripts/ci-triage-review-backlog.mts",
     "pilot:regenerate-10": "tsx scripts/pilot-regenerate-10.mts",
     "verify:118198": "tsx scripts/verify-118198.mts",
     "regenerate:remaining-72": "tsx scripts/regenerate-remaining-72.mts",
