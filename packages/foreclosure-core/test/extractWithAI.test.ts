@@ -182,21 +182,25 @@ describe("extractWithAI", () => {
     expect(rejected).toContain("originalPrincipalAmount");
   });
 
-  it("never fabricates a value -- a fully unusable tool call returns a null result, not a guessed default", async () => {
+  it("never fabricates a value -- a fully unusable tool call returns a null result, not a guessed default (after exhausting the bounded retry)", async () => {
     const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
-    createMock.mockResolvedValueOnce({
+    const unusableResponse = {
       content: [{ type: "text", text: "I could not extract structured data." }],
       stop_reason: "end_turn",
       usage: { input_tokens: 100, output_tokens: 20 },
-    });
+    };
+    createMock.mockResolvedValueOnce(unusableResponse).mockResolvedValueOnce(unusableResponse);
 
     const outcome = await extractWithAI("notice text", budget, { apiKey: "test-key" });
 
     expect(outcome.result).toBeNull();
     expect(outcome.reason).toBeTruthy();
+    // Both attempts were real API calls -- confirmed by the mock having
+    // been invoked twice, not by string-matching the reason text.
+    expect(createMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does not report usedAiFallback-worthy recovery when every field is blank (zero useful fields)", async () => {
+  it("does not report usedAiFallback-worthy recovery when every field is blank (zero useful fields) -- and does NOT retry, since every field still passed validation", async () => {
     const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
     mockToolResponse(fullBlankResponse());
 
@@ -204,6 +208,77 @@ describe("extractWithAI", () => {
 
     const anyUseful = outcome.fieldOutcomes.some((f) => f.status === "accepted" && f.hadValue);
     expect(anyUseful).toBe(false);
+    // A fully-blank-but-VALID response (every field present and
+    // schema-valid, just carrying a null value) is a normal low-signal
+    // result, not the "acceptedCount === 0" total-failure case that
+    // triggers a retry -- only a response where every field is
+    // omitted/rejected_invalid counts as a total failure.
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Root-caused against a real total-failure case (HID-117888, second
+  // fresh-25 batch, 2026-08-09): re-running the exact same production call
+  // against the same stored text, with no code changes, produced a
+  // perfect response -- no reproducible schema/prompt bug was found, so a
+  // bounded single retry is the evidence-backed fix rather than chasing a
+  // schema bug that likely doesn't exist.
+  describe("bounded retry on total extraction failure", () => {
+    it("retries once and returns the successful second attempt when the first attempt has zero fields pass validation", async () => {
+      const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
+      mockToolResponse({}); // first attempt: total failure (every one of 18 fields omitted)
+      const secondResponse = fullBlankResponse();
+      secondResponse.borrowerNames = { value: ["JOHN DOE"], explicitlyStated: true, confidence: 0.9, supportingText: "x", pageNumber: 1 };
+      mockToolResponse(secondResponse); // second attempt: real recovery
+
+      const outcome = await extractWithAI("notice text", budget, { apiKey: "test-key" });
+
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(outcome.result?.borrowerNames.value).toEqual(["JOHN DOE"]);
+      expect(outcome.reason).toBeUndefined();
+    });
+
+    it("retries once when the first attempt returns no usable tool call at all, and returns the successful second attempt", async () => {
+      const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
+      createMock.mockResolvedValueOnce({
+        content: [{ type: "text", text: "I could not extract structured data." }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 100, output_tokens: 20 },
+      });
+      const secondResponse = fullBlankResponse();
+      secondResponse.saleDate = { value: "2026-09-01", explicitlyStated: true, confidence: 0.95, supportingText: "x", pageNumber: 1 };
+      mockToolResponse(secondResponse);
+
+      const outcome = await extractWithAI("notice text", budget, { apiKey: "test-key" });
+
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(outcome.result?.saleDate.value).toBe("2026-09-01");
+    });
+
+    it("does NOT retry when at least one field passes validation on the first attempt (only a TOTAL failure triggers a retry)", async () => {
+      const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
+      const response = fullBlankResponse();
+      response.saleDate = { value: "2026-09-01", explicitlyStated: true, confidence: 0.95, supportingText: "x", pageNumber: 1 };
+      mockToolResponse(response);
+
+      const outcome = await extractWithAI("notice text", budget, { apiKey: "test-key" });
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(outcome.result?.saleDate.value).toBe("2026-09-01");
+    });
+
+    it("sums cost and token usage across both attempts rather than reporting only the last one", async () => {
+      const { extractWithAI } = await import("../src/extraction/ai/extractWithAI");
+      mockToolResponse({}, { inputTokens: 1000, outputTokens: 500 }); // first attempt: total failure
+      const secondResponse = fullBlankResponse();
+      secondResponse.borrowerNames = { value: ["JOHN DOE"], explicitlyStated: true, confidence: 0.9, supportingText: "x", pageNumber: 1 };
+      mockToolResponse(secondResponse, { inputTokens: 1200, outputTokens: 600 });
+
+      const outcome = await extractWithAI("notice text", budget, { apiKey: "test-key" });
+
+      expect(outcome.inputTokens).toBe(2200);
+      expect(outcome.outputTokens).toBe(1100);
+      expect(budget.recordSpend).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("records token usage and spend for instrumentation", async () => {

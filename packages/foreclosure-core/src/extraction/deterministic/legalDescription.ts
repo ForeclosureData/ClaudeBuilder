@@ -94,8 +94,28 @@ function findLotBlockSentence(text: string): string | null {
   // Brilla Subdivision Phase VII..."), and a spelled-out lot/block number
   // is often followed by a parenthetical digit ("Twenty-Eight (28)") --
   // both tolerated here so this still matches without requiring Block.
+  //
+  // The trailing span used to be `[^\n]{0,200}`, which truncated at the
+  // FIRST line wrap -- confirmed against real HID-117888 text, where its
+  // "EXHIBIT A" page is OCR'd with a BLANK LINE (`\n\n`) between every
+  // visual line ("...out of Blocks\n\nSixty-one (61) and Sixty-Two
+  // (62)..."), cutting the description off after the very first line.
+  // A single blank line can't be trusted as "end of description" here --
+  // it's this page's line-wrap character, not a paragraph break -- so
+  // instead this stops only at unambiguous end-of-content signals: 3+
+  // consecutive newlines (a real section/page break elsewhere in the
+  // corpus), a page-number-only line (the actual terminator on this
+  // template, confirmed as "...Texas.\n\n2\n"), or the start of another
+  // known field's label. That last stop was added after the 500-char
+  // budget alone caused a REAL regression on a different notice
+  // (HID-117914): its legal description sits in a single-newline-per-line
+  // key-value template with "Date of Sale:"/"Place of sale of Property:"
+  // immediately following on the very next lines, no blank line or page
+  // number between them -- without an explicit stop, the wider budget
+  // swallowed the sale date and location straight into the legal
+  // description.
   const match = text.match(
-    /(?:All of )?Lot\s+[A-Za-z0-9\-]+(?:\s*\([A-Za-z0-9]+\))?,?\s*(?:Block\s+[A-Za-z0-9\-]+(?:\s*\([A-Za-z0-9]+\))?,?\s*)?[^\n]{0,200}/i,
+    /(?:All of )?Lot\s+[A-Za-z0-9\-]+(?:\s*\([A-Za-z0-9]+\))?,?\s*(?:Block\s+[A-Za-z0-9\-]+(?:\s*\([A-Za-z0-9]+\))?,?\s*)?(?:(?!\n{3}|\n\s*\d+\s*(?:\n|$)|Date of Sale|Time of Sale|Place of [Ss]ale|Earliest time|Substitute Trustee|Original Principal)[\s\S]){0,500}/i,
   );
-  return match ? match[0].trim() : null;
+  return match ? match[0].replace(/\s+/g, " ").trim() : null;
 }

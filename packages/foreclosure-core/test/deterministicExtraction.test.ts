@@ -276,6 +276,58 @@ describe("parseLegalDescription", () => {
       expect(result?.subdivision).toContain("PALM VALLEY ESTATES SUBDIVISION");
     });
   });
+
+  // Real HID-117888's "EXHIBIT A" page is OCR'd with a blank line (`\n\n`)
+  // between every visual line -- the un-labeled fallback path (no "Legal
+  // Description:" label, no "described as follows" phrase) previously
+  // truncated at the very first line wrap, losing everything after
+  // "...out of Blocks". Fixture below mirrors that real line-wrap pattern.
+  describe("un-labeled fallback tolerance for a blank-line-per-line OCR page (HID-117888)", () => {
+    it("spans multiple blank-line-separated OCR lines instead of truncating at the first line wrap", () => {
+      const text =
+        "Lot Number(s) 102, SAMPLE ESTATES PHASE III, being a 42.804 acre tract of land out of Blocks\n\n" +
+        "Sixty-one (61) and Sixty-Two (62), Sample Subdivision, Hidalgo County, Texas, according to\n\n" +
+        "the map or plat thereof recorded in Volume 47, Pages 199-201, Map Records, Hidalgo County, Texas.";
+      const result = parseLegalDescription(text);
+      expect(result?.rawText).toContain("Sixty-one (61) and Sixty-Two (62)");
+      expect(result?.rawText).toContain("Map Records, Hidalgo County, Texas.");
+    });
+
+    it("still stops at a page-number-only line rather than continuing onto the next page's content", () => {
+      const text =
+        "Lot Number(s) 102, SAMPLE ESTATES PHASE III, being a 42.804 acre tract of land out of Blocks\n\n" +
+        "Sixty-one (61) and Sixty-Two (62), Sample Subdivision, Hidalgo County, Texas.\n\n" +
+        "2\n" +
+        "UNRELATED CONTENT FROM THE NEXT DOCUMENT PAGE THAT MUST NOT BE INCLUDED";
+      const result = parseLegalDescription(text);
+      expect(result?.rawText).not.toContain("UNRELATED CONTENT");
+    });
+
+    it("still stops at a genuine paragraph break (3+ consecutive newlines)", () => {
+      const text =
+        "Lot Number(s) 102, SAMPLE ESTATES PHASE III, out of Blocks Sixty-one and Sixty-Two, Sample Subdivision, Hidalgo County, Texas.\n\n\n" +
+        "SUBSTITUTE TRUSTEE(S): SAMPLE TRUSTEE NAME";
+      const result = parseLegalDescription(text);
+      expect(result?.rawText).not.toContain("SUBSTITUTE TRUSTEE");
+    });
+
+    // Real regression caught while fixing HID-117888: the wider 500-char
+    // budget above, on its own, swallowed a DIFFERENT real notice's
+    // (HID-117914) sale date and sale location straight into the legal
+    // description -- that notice's key-value template puts "Date of
+    // Sale:"/"Place of sale of Property:" on the very next single-newline
+    // lines, with no blank line or page number to stop at.
+    it("stops at a known field label immediately following on the next line, even with only a single newline between them (real HID-117914 regression)", () => {
+      const text =
+        "LOT 72, SAMPLE ESTATES NO. 9, PHASE III, FILED IN PLAT BOOK 41, PAGE 127-128. STATE OF TEXAS.\n" +
+        "Date of Sale: August 04, 2026 Earliest time Sale will begin: 10:00 AM\n" +
+        "Place of sale of Property: THE SAMPLE COUNTY ADMINISTRATIVE BUILDING";
+      const result = parseLegalDescription(text);
+      expect(result?.rawText).not.toContain("Date of Sale");
+      expect(result?.rawText).not.toContain("Place of sale");
+      expect(result?.rawText).toContain("PAGE 127-128");
+    });
+  });
 });
 
 describe("extractDeterministic (full notice)", () => {
@@ -405,6 +457,126 @@ Date of Sale: September 1, 2026`;
     const result = extractDeterministic(notice);
     expect(result.borrowerNames.value).toBeNull();
     expect(result.borrowerNames.confidence).toBe(0);
+  });
+});
+
+// Real HID-117888 (second fresh-25 batch, 2026-08-09) used a template with
+// no "Grantor(s)/Trustor(s):" label at all and a fixed terminator ("secures
+// the repayment") that never appears -- the role is instead stated as a
+// trailing parenthetical right after the name list ("...executed by
+// NAME(S) ("Mortgagor")"), which none of the three existing candidate
+// patterns recognized, causing total 0/18-field extraction failure on that
+// notice. These fixtures use placeholder names but mirror the real
+// template's structure, including the OCR artifacts that surfaced two
+// further bugs while fixing this one.
+describe("extractDeterministic (HID-117888 'executed by NAME(S) (\"Mortgagor\")' template)", () => {
+  it("extracts a single grantor from a parenthetical-role convention with no other label", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+PURSUANT TO AUTHORITY conferred upon the Trustee by that certain Deed of Trust dated
+October 18, 2024, executed by SAMPLE BORROWER, A SINGLE PERSON, ("Mortgagor") to Sample
+Trustee, for the benefit of SAMPLE MORTGAGE CORPORATION ("Mortgagee"), filed for record
+under Instrument No. 3591492.
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["SAMPLE BORROWER"]);
+  });
+
+  it("extracts two grantors joined by ', AND ' (comma immediately before AND) without leaving a stray 'AND ' prefix on the second name", () => {
+    // Splitting on the comma first (as a bare ",\s*" delimiter) can strand
+    // "AND" as a literal prefix on the next segment, since it no longer has
+    // the leading whitespace "\s+AND\s+" requires -- confirmed against the
+    // real HID-117888 text ("...A SINGLE PERSON, AND OLIVIA MUNOZ...").
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+...executed by FIRST BORROWER, A SINGLE PERSON, AND SECOND BORROWER, A SINGLE PERSON,
+("Mortgagor") to Sample Trustee, for the benefit of SAMPLE MORTGAGE CORP ("Mortgagee").
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["FIRST BORROWER", "SECOND BORROWER"]);
+    expect(result.borrowerNames.value).not.toContain("AND SECOND BORROWER");
+  });
+
+  it("strips a stray mid-name OCR colon left by a line wrap inside the captured name", () => {
+    // Real artifact: "...OLIVIA MUNOZ :\nVARGAS..." -- the OCR line-wrap
+    // left a colon where the line broke, mid-surname.
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+...executed by SAMPLE BORROWER, A SINGLE PERSON, AND OLIVIA MUNOZ :
+VARGAS A/K/A OLIVIA M. VARGAS, A SINGLE PERSON, ("Mortgagor") to Sample Trustee, for the
+benefit of SAMPLE MORTGAGE CORP ("Mortgagee").
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["SAMPLE BORROWER", "OLIVIA MUNOZ VARGAS A/K/A OLIVIA M. VARGAS"]);
+  });
+
+  it("extracts sale date from narrative 'to sell on <Weekday>, <Month> <Day>, <Year>' phrasing with no 'Date of Sale:'/'Sale Information:' label", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+...default having been made in the covenants of the Deed of Trust, to sell on Tuesday, August 4, 2026,
+(that being the first Tuesday of the month), at public auction to the highest bidder for cash...`;
+    const result = extractDeterministic(notice);
+    expect(result.saleDate.value).toBe("2026-08-04");
+  });
+});
+
+// Real HID-117914 (second fresh-25 batch, 2026-08-09): a same-line-only
+// "Grantor:" capture stopped dead at a PDF line-wrap that fell exactly at
+// a middle initial, silently dropping the surname AND a second co-borrower
+// that continued on the next line -- stored borrower was literally
+// "CHRISTOPHER D" with no surname at all. Fixed via a shared
+// mergeLineWrappedNameContinuation helper (nameLineWrap.ts) used by both
+// the same-line and label-alone-on-its-own-line grantor capture paths.
+describe("extractDeterministic (HID-117914 line-wrapped borrower name after a middle initial)", () => {
+  it("recovers a surname and a second co-borrower that continue on the next line after a middle-initial line wrap", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Deed of Trust Date: November 24, 2009 Original Mortgagor/Grantor: SAMPLE B.
+BORROWER AND SECOND C. BORROWER
+Original Beneficiary / Mortgagee: SAMPLE BANK, FSB
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["SAMPLE B. BORROWER", "SECOND C. BORROWER"]);
+  });
+
+  it("does not merge the next line when the captured name ends in a real multi-letter suffix (Jr./Sr./II/III), not a bare middle initial", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Grantor: SAMPLE BORROWER, JR.
+Original Beneficiary / Mortgagee: SAMPLE BANK, FSB
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    // cleanName() strips trailing sentence/name punctuation (pre-existing
+    // behavior), so the final period is gone either way -- what this test
+    // actually guards is that "Original Beneficiary / Mortgagee" never
+    // gets appended onto the name.
+    expect(result.borrowerNames.value).toEqual(["SAMPLE BORROWER, JR"]);
+    expect(result.borrowerNames.value).not.toContain("SAMPLE BORROWER, JR Original Beneficiary / Mortgagee");
+  });
+
+  it("does not merge a next line that is a new field's label rather than a name continuation", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Grantor: SAMPLE BORROWER D.
+Original Beneficiary / Mortgagee: SAMPLE BANK, FSB
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["SAMPLE BORROWER D"]);
+  });
+
+  it("does not merge a next line that looks like an address rather than a name continuation", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Grantor: SAMPLE BORROWER D.
+1913 W 40TH ST, MISSION, TX 78573
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["SAMPLE BORROWER D"]);
+  });
+
+  it("tolerates an OCR punctuation variant (no period after the initial) without over-merging an unrelated next line", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE'S SALE
+Grantor: SAMPLE BORROWER D
+Original Beneficiary / Mortgagee: SAMPLE BANK, FSB
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    // No trailing period on the initial means the dangling-initial pattern
+    // doesn't match at all -- this is treated as a (possibly incomplete)
+    // complete capture rather than triggering a merge, since there's no
+    // punctuation evidence of a wrapped initial to act on.
+    expect(result.borrowerNames.value).toEqual(["SAMPLE BORROWER D"]);
   });
 });
 

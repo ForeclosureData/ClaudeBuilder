@@ -8,6 +8,7 @@ const navItems = [
   { href: "/admin/sources", label: "County sources" },
   { href: "/admin/review-queue", label: "Review queue" },
   { href: "/admin/property-resolution", label: "Property resolution" },
+  { href: "/admin/duplicate-notices", label: "Duplicate notices" },
   { href: "/admin/corrections", label: "Corrections" },
 ];
 

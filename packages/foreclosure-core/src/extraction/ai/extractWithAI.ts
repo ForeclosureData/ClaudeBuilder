@@ -73,58 +73,91 @@ export async function extractWithAI(
   const client = new Anthropic({ apiKey });
   const model = options?.model ?? process.env.AI_EXTRACTION_MODEL ?? "claude-sonnet-5";
 
-  const response = await client.messages.create({
-    // The schema has 18 fields, each with 5 sub-properties (value,
-    // explicitlyStated, confidence, supportingText, pageNumber) -- a fully
-    // populated response comfortably exceeds 2000 tokens and was silently
-    // truncating mid-JSON on real notices in an earlier incident. Raised
-    // with headroom; unrelated to the missing-required-keys bug this
-    // tool-use rewrite fixes.
-    max_tokens: 4096,
-    model,
-    system: AI_EXTRACTION_SYSTEM_PROMPT,
-    tools: [
-      {
-        name: AI_EXTRACTION_TOOL_NAME,
-        description: "Records the structured fields extracted from the foreclosure notice.",
-        input_schema: AI_EXTRACTION_TOOL_INPUT_SCHEMA,
-      },
-    ],
-    tool_choice: { type: "tool", name: AI_EXTRACTION_TOOL_NAME },
-    messages: [{ role: "user", content: noticeText }],
-  });
+  // A total failure (every one of 18 fields omitted/rejected, or no usable
+  // tool call at all) gets ONE retry rather than being reported as a
+  // permanent extraction failure. Root-caused against a real total-failure
+  // case (HID-117888, second fresh-25 batch): a direct re-run of this exact
+  // call against the same stored text, with no code changes, produced a
+  // perfect 18/18 response -- no reproducible schema/prompt bug was found,
+  // so the original failure was very likely a one-off malformed sampling on
+  // that specific call. Bounded to a single retry (2 attempts total) so a
+  // genuinely unrecoverable document (e.g. a scanned page too garbled for
+  // the model on any attempt) still fails fast rather than looping.
+  const maxAttempts = 2;
+  let totalCostCents = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let lastOutcome: Omit<AiExtractionOutcome, "costCents" | "inputTokens" | "outputTokens"> | null = null;
 
-  const inputTokens = response.usage?.input_tokens ?? 0;
-  const outputTokens = response.usage?.output_tokens ?? 0;
-  const costCents = estimateCostCents(inputTokens, outputTokens);
-  await budget.recordSpend(costCents);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await client.messages.create({
+      // The schema has 18 fields, each with 5 sub-properties (value,
+      // explicitlyStated, confidence, supportingText, pageNumber) -- a fully
+      // populated response comfortably exceeds 2000 tokens and was silently
+      // truncating mid-JSON on real notices in an earlier incident. Raised
+      // with headroom; unrelated to the missing-required-keys bug this
+      // tool-use rewrite fixes.
+      max_tokens: 4096,
+      model,
+      system: AI_EXTRACTION_SYSTEM_PROMPT,
+      tools: [
+        {
+          name: AI_EXTRACTION_TOOL_NAME,
+          description: "Records the structured fields extracted from the foreclosure notice.",
+          input_schema: AI_EXTRACTION_TOOL_INPUT_SCHEMA,
+        },
+      ],
+      tool_choice: { type: "tool", name: AI_EXTRACTION_TOOL_NAME },
+      messages: [{ role: "user", content: noticeText }],
+    });
 
-  const toolUseBlock = response.content.find((b) => b.type === "tool_use");
-  if (!toolUseBlock || !("input" in toolUseBlock) || typeof toolUseBlock.input !== "object" || toolUseBlock.input === null) {
-    const truncated = response.stop_reason === "max_tokens";
+    const inputTokens = response.usage?.input_tokens ?? 0;
+    const outputTokens = response.usage?.output_tokens ?? 0;
+    const costCents = estimateCostCents(inputTokens, outputTokens);
+    await budget.recordSpend(costCents);
+    totalCostCents += costCents;
+    totalInputTokens += inputTokens;
+    totalOutputTokens += outputTokens;
+
+    const toolUseBlock = response.content.find((b) => b.type === "tool_use");
+    if (!toolUseBlock || !("input" in toolUseBlock) || typeof toolUseBlock.input !== "object" || toolUseBlock.input === null) {
+      const truncated = response.stop_reason === "max_tokens";
+      lastOutcome = {
+        ranAiExtraction: true,
+        result: null,
+        reason: `AI did not return a usable tool call${truncated ? " (truncated: hit max_tokens)" : ""}${attempt < maxAttempts ? " -- retrying" : ""}`,
+        fieldOutcomes: [],
+      };
+      continue;
+    }
+
+    const rawInput = toolUseBlock.input as Record<string, unknown>;
+    const { result, fieldOutcomes } = validateFieldsIndependently(rawInput);
+    const acceptedCount = fieldOutcomes.filter((f) => f.status === "accepted").length;
+
+    if (acceptedCount === 0 && attempt < maxAttempts) {
+      lastOutcome = { ranAiExtraction: true, result, reason: "No fields passed validation -- retrying", fieldOutcomes };
+      continue;
+    }
+
     return {
       ranAiExtraction: true,
-      result: null,
-      costCents,
-      reason: `AI did not return a usable tool call${truncated ? " (truncated: hit max_tokens)" : ""}`,
-      fieldOutcomes: [],
-      inputTokens,
-      outputTokens,
+      result, // partial: caller merges only fields with non-null values, so rejected/omitted fields are inert
+      costCents: totalCostCents,
+      reason: acceptedCount === 0 ? "No fields passed validation" : undefined,
+      fieldOutcomes,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
     };
   }
 
-  const rawInput = toolUseBlock.input as Record<string, unknown>;
-  const { result, fieldOutcomes } = validateFieldsIndependently(rawInput);
-  const acceptedCount = fieldOutcomes.filter((f) => f.status === "accepted").length;
-
+  // Every attempt was a total failure -- return the last one, with the
+  // combined cost of every attempt actually made.
   return {
-    ranAiExtraction: true,
-    result, // partial: caller merges only fields with non-null values, so rejected/omitted fields are inert
-    costCents,
-    reason: acceptedCount === 0 ? "No fields passed validation" : undefined,
-    fieldOutcomes,
-    inputTokens,
-    outputTokens,
+    ...(lastOutcome as Omit<AiExtractionOutcome, "costCents" | "inputTokens" | "outputTokens">),
+    costCents: totalCostCents,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
   };
 }
 

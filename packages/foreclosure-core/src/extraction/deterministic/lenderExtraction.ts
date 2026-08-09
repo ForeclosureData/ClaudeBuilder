@@ -143,6 +143,15 @@ function extractOriginalMortgagee(text: string): Match | null {
   const nomineeFor = firstValidMatch(text, new RegExp(`nominee\\s+for\\s+(${NAME_CHARS}{1,150}?)\\s*,?\\s*its\\s+successors\\s+and\\s+assigns`, "gi"));
   if (nomineeFor) return nomineeFor;
 
+  // "...for the benefit of NAME ("Mortgagee")" -- a real Hidalgo narrative
+  // template (HID-117888) with no MERS nominee clause and no "Original
+  // Mortgagee:" label at all. On OCR-garbled input this candidate is
+  // expected to be rejected by looksLikeOrgName's leading-capital-letter
+  // guard (e.g. a misread "21st" reading as "215\"") rather than fabricate
+  // a wrong value -- AI fallback fills it in that case.
+  const benefitOf = firstValidMatch(text, new RegExp(`for\\s+the\\s+benefit\\s+of\\s+(${NAME_CHARS}{1,150}?)\\s*\\(["“]?${MORTGAGEE_FUZZY}["”]?\\)`, "gi"));
+  if (benefitOf) return benefitOf;
+
   const labeled = firstValidMatch(text, /Original\s+(?:Mortgagee\/Beneficiary|Beneficiary\/Mortgagee|Mortgagee|Beneficiary):?\s*([^\n]+)/gi);
   if (labeled) {
     // The label's own value often still contains the raw MERS clause ("Mortgage Electronic Registration

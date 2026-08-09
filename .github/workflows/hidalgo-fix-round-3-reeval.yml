@@ -1,0 +1,68 @@
+name: Hidalgo Fix Round 3 Re-eval (HID-117888/117914/117729/117731)
+
+# Re-evaluates the four notices named in the approved fix-round-3 request
+# using their existing stored rawText -- no new ingestion, no other notice
+# touched. Backfills a truncation-repair or gap-fill onto HID-117888/
+# HID-117914 where the corrected extraction demonstrably supersedes the
+# stored value, and scores + links HID-117729/HID-117731 as a possible
+# content duplicate (never merges/archives either case). Defaults to a dry
+# run -- pass dry_run=false explicitly to perform real writes, only after
+# reviewing a dry-run's output.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true (default), compute and report changes without writing anything."
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  reeval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Run foreclosure-core test suite
+        run: pnpm --filter @foreclosuredata/foreclosure-core test
+
+      - name: Push new duplicate-detection schema (additive only -- new enums/model/relations, no column drops or renames)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/database run db:push
+
+      - name: Re-evaluate the 4 affected records
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.FORECLOSUREDATA_ANTHROPIC_API_KEY }}
+          FIX_ROUND_3_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: pnpm --filter @foreclosuredata/web run fix-round-3:reeval

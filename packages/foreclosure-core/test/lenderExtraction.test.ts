@@ -130,4 +130,24 @@ describe("extractLenderParties", () => {
     expect(r.currentMortgagee.value).toBeNull();
     expect(r.mortgageServicer.value).toBeNull();
   });
+
+  // Real HID-117888 template: no MERS "as nominee for" clause and no
+  // "Original Mortgagee:" label -- the original lender is instead named via
+  // a "for the benefit of NAME (\"Mortgagee\")" narrative clause.
+  it("extracts the original mortgagee from a 'for the benefit of NAME (\"Mortgagee\")' clause", () => {
+    const text = `executed by Sample Borrower, a single person, ("Mortgagor") to Sample Trustee, Trustee, for the
+      benefit of Example 21st Mortgage Corporation ("Mortgagee"), filed for record under Instrument No. 3591492.`;
+    const r = extractLenderParties(text);
+    expect(r.originalMortgagee.value).toBe("Example 21st Mortgage Corporation");
+  });
+
+  it("does not fabricate a value from a 'for the benefit of' clause whose captured name is OCR-garbled beyond a plausible org name", () => {
+    // Real artifact: OCR misread "21st" as `215"` (a stray quote character
+    // outside the name-character class) -- this must stay null rather than
+    // storing garbage, leaving AI fallback to recover the correct value.
+    const text = `executed by Sample Borrower ("Mortgagor") to Sample Trustee, Trustee, for the
+      benefit of 215" MORTGAGE CORPORATION ("Mortgagee"), filed for record under Instrument No. 3591492.`;
+    const r = extractLenderParties(text);
+    expect(r.originalMortgagee.value).toBeNull();
+  });
 });

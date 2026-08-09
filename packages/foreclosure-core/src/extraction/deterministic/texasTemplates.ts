@@ -5,6 +5,7 @@ import { detectStatedPropertyAddress } from "./addresses";
 import { parseLegalDescription } from "./legalDescription";
 import { extractLenderParties } from "./lenderExtraction";
 import { mergeDanglingNameSuffixes } from "../nameSuffixes";
+import { mergeLineWrappedNameContinuation } from "../nameLineWrap";
 
 /**
  * Layer 1 (deterministic) extraction for a standard Texas
@@ -45,8 +46,16 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
   // OCR text -- on one real notice it matched a line-wrapped "dated
   // November 30, 2017" (the Deed of Trust date, not the sale date) instead
   // because that word happened to fall at the start of an OCR'd line.
+  // "...intends to sell on Tuesday, August 4, 2026, at the following..." is
+  // a fifth real Hidalgo template variant (HID-117888) with no "Date of
+  // Sale:"/"Sale Information:" label at all -- checked last since "to sell
+  // on" is narrative prose, not a fixed field label, and could plausibly
+  // appear elsewhere in a differently-worded notice.
   const saleDate =
-    parseLabeledDate(text, /Date of Sale:?/i) ?? parseLabeledDate(text, /Sale Information:?/i) ?? parseLabeledDate(text, /^Date:?/im);
+    parseLabeledDate(text, /Date of Sale:?/i) ??
+    parseLabeledDate(text, /Sale Information:?/i) ??
+    parseLabeledDate(text, /^Date:?/im) ??
+    parseLabeledDate(text, /to sell on\b/i);
   const saleTime = parseLabeledTime(text, /Time of Sale:?/i) ?? parseLabeledTime(text, /^Time:?/im);
   const saleLocationMatch = text.match(/Place of Sale:?\s*([^\n]+(?:\n[^\n]+)?)/i) ?? text.match(/^Place:?\s*([^\n]+(?:\n[^\n]+)?)/im);
 
@@ -121,7 +130,7 @@ export function extractDeterministic(noticeText: string): ExtractedForeclosureNo
     saleDate: value(saleDate, {
       explicitlyStated: Boolean(saleDate),
       confidence: saleDate ? 0.95 : 0,
-      supportingText: evidence(/Date of Sale:?[^\n]+/i) ?? evidence(/Sale Information:?[^\n]+/i),
+      supportingText: evidence(/Date of Sale:?[^\n]+/i) ?? evidence(/Sale Information:?[^\n]+/i) ?? evidence(/to sell on[^\n]+/i),
     }),
     saleTime: value(saleTime, {
       explicitlyStated: Boolean(saleTime),
@@ -195,7 +204,11 @@ function normalize(text: string): string {
 }
 
 function cleanName(raw: string): string {
-  return raw.replace(/\s+/g, " ").replace(/[.,;]+$/, "").trim();
+  // Strips stray mid-string colon/semicolon OCR artifacts -- confirmed
+  // against real HID-117888 text, where a line-wrap inside a captured name
+  // ("...OLIVIA MUNOZ :\nVARGAS...") leaves a colon that the previous
+  // trailing-only `[.,;]+$` strip never touched.
+  return raw.replace(/[:;]+/g, " ").replace(/\s+/g, " ").replace(/[.,;]+$/, "").trim();
 }
 
 /**
@@ -228,8 +241,15 @@ function looksLikeNameList(text: string): boolean {
 const MARITAL_STATUS_DESCRIPTOR = /^(?:an?\s+)?(?:unmarried|married|single)\s+(?:man|woman|person)$|^husband$|^wife$|^husband and wife$/i;
 
 function splitNames(raw: string): string[] {
+  // The ", AND " combo (a marital-status descriptor followed by "AND",
+  // e.g. "...A SINGLE PERSON, AND OLIVIA...") must be split as ONE
+  // delimiter, checked before the bare "\s+AND\s+"/"," alternatives --
+  // confirmed against real HID-117888 text, where splitting on "," alone
+  // first consumes the comma+space, leaving "AND" stuck as a literal
+  // prefix on the next name (no leading whitespace left for
+  // "\s+AND\s+" to match against).
   const names = cleanName(raw)
-    .split(/\s+AND\s+|\s+and\/or\s+|,\s*/i)
+    .split(/\s*,\s*AND\s+|\s+AND\s+|\s+and\/or\s+|,\s*/i)
     .map((n) => n.trim())
     .filter(Boolean)
     .filter((n) => !MARITAL_STATUS_DESCRIPTOR.test(n));
@@ -266,16 +286,37 @@ function extractGrantorNames(text: string): { match: RegExpMatchArray | null; na
     return { match: executedByMatch, names: splitNames(executedByMatch[1]!) };
   }
 
+  // "...executed by NAME(S) ... ("Mortgagor")" -- a fourth real template
+  // (confirmed against HID-117888) that states the role in a trailing
+  // parenthetical instead of the `executedByMatch` pattern's fixed
+  // terminator phrase, and doesn't have "deed of trust" immediately before
+  // "executed by" (there's an intervening "dated <date>,").
+  const executedByParenRoleMatch = text.match(
+    /executed by\s+([\s\S]{1,220}?)\s*\(["“]?(?:Mortgagor|Grantor|Trustor)\(?s?\)?["”]?\)/i,
+  );
+  if (executedByParenRoleMatch && looksLikeNameList(executedByParenRoleMatch[1]!)) {
+    return { match: executedByParenRoleMatch, names: splitNames(executedByParenRoleMatch[1]!) };
+  }
+
   const sameLineMatch = text.match(/(?:Grant(?:o|0)r\(?s?\)?(?:\/Mortgagor\(?s?\)?)?|Trustor\(?s?\)?):?\s*([^\n]+)/i);
   if (sameLineMatch && looksLikeNameList(sameLineMatch[1]!)) {
-    return { match: sameLineMatch, names: splitNames(sameLineMatch[1]!) };
+    // A same-line-only capture ("[^\n]+") stops dead at the first line
+    // break, which real Hidalgo notices sometimes hit exactly at a middle
+    // initial (real HID-117914: "CHRISTOPHER D.\nMUNIZ AND MAYRA C.
+    // MARTINEZ" reported as complete borrower "CHRISTOPHER D." with the
+    // surname and second co-borrower silently dropped). Pulls in the next
+    // line only when there's real evidence it's a continuation, not
+    // unrelated content -- see mergeLineWrappedNameContinuation.
+    const merged = mergeLineWrappedNameContinuation(sameLineMatch[1]!, text.slice(sameLineMatch.index! + sameLineMatch[0].length));
+    return { match: sameLineMatch, names: splitNames(merged) };
   }
 
   const nextLineMatch = text.match(
     /(?:Grant(?:o|0)r\(?s?\)?(?:\/Mortgagor\(?s?\)?)?|Trustor\(?s?\)?):?\s*\n\s*(?:[\d/]{6,12}\s+)?([A-Z][A-Za-z .,'\-]+(?:AND\s+[A-Z][A-Za-z .,'\-]+)?)/i,
   );
   if (nextLineMatch && looksLikeNameList(nextLineMatch[1]!)) {
-    return { match: nextLineMatch, names: splitNames(nextLineMatch[1]!) };
+    const merged = mergeLineWrappedNameContinuation(nextLineMatch[1]!, text.slice(nextLineMatch.index! + nextLineMatch[0].length));
+    return { match: nextLineMatch, names: splitNames(merged) };
   }
 
   return { match: null, names: [] };

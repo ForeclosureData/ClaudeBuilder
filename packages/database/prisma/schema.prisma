@@ -216,6 +216,12 @@ enum ManualReviewReason {
   /// "must be new"; always routed here for a human to confirm it isn't a
   /// duplicate of an existing case before treating it as authoritative.
   MISSING_FILING_NUMBER
+  /// A PossibleDuplicateNoticeLink at LIKELY_SAME_EVENT or
+  /// CONFIRMED_SAME_EVENT confidence was created for this case -- routes it
+  /// into the existing manual-review queue without touching the case's own
+  /// identity/publication fields. See PossibleDuplicateNoticeLink for the
+  /// full evidence record.
+  POSSIBLE_CONTENT_DUPLICATE
 }
 
 enum ManualReviewTaskStatus {
@@ -833,6 +839,8 @@ model ForeclosureCase {
   processingJobs    ProcessingJob[]
   appraisalCandidates  AppraisalPropertyCandidate[]
   resolutionAttempts   PropertyResolutionAttempt[]
+  duplicateLinksAsCaseA PossibleDuplicateNoticeLink[] @relation("DuplicateLinkCaseA")
+  duplicateLinksAsCaseB PossibleDuplicateNoticeLink[] @relation("DuplicateLinkCaseB")
 
   // Re-enabled after the production-safety review confirmed zero duplicate
   // (countyId, countyFilingNumber) rows in production (all current rows
@@ -849,6 +857,94 @@ model ForeclosureCase {
   @@index([status])
   @@index([archivedAt])
   @@map("foreclosure_cases")
+}
+
+/// Confidence tier for a PossibleDuplicateNoticeLink -- how strong the
+/// combined evidence is that two DISTINCT county filings (different
+/// countyFilingNumber, each its own legally meaningful ForeclosureCase)
+/// represent the same real-world foreclosure event. Deliberately separate
+/// from ForeclosureCase.archivedAt/mergedIntoCaseId, which is the existing
+/// mechanism for a LITERAL duplicate re-ingestion of the SAME filing
+/// number -- this enum is for two filings that are each real, distinct
+/// source records that may just describe one underlying event (real
+/// example: HID-117729 and HID-117731, second fresh-25 batch, 2026-08-09).
+enum NoticeDuplicateConfidence {
+  /// Near-certain: either a shared trustee/servicer tracking number (e.g.
+  /// the same "T.S. #" appearing in both notices' raw text) plus matching
+  /// core fields, or a near-identical normalized raw-text fingerprint,
+  /// with zero conflicting fields.
+  CONFIRMED_SAME_EVENT
+  /// Several independent core fields match (address, legal description,
+  /// borrower names, principal, sale date, lender) with zero conflicts,
+  /// but no single decisive signal (tracking number / text fingerprint).
+  LIKELY_SAME_EVENT
+  /// Some matching evidence, but thinner than LIKELY_SAME_EVENT (e.g. only
+  /// two independent fields agree) -- worth a human look, not strong
+  /// enough to act on.
+  POSSIBLE_DUPLICATE
+}
+
+enum NoticeDuplicateLinkStatus {
+  /// Newly detected, not yet reviewed by a human.
+  OPEN
+  /// A reviewer confirmed these two cases do represent the same real-world
+  /// event. Cases stay separate, distinct ForeclosureCase rows -- this
+  /// status only changes how they're counted/displayed, per the
+  /// SOURCE RECORD COUNT vs UNIQUE FORECLOSURE EVENT COUNT distinction
+  /// (see docs/DEPLOYMENT.md). Never triggers a merge/archive.
+  CONFIRMED_DUPLICATE
+  /// A reviewer determined these are in fact distinct real-world events
+  /// (e.g. two separate liens on the same property, or an amended
+  /// re-filing that changed a material term) despite the matching
+  /// evidence.
+  REJECTED_DISTINCT
+}
+
+/// A detected (or reviewer-confirmed) signal that two DISTINCT
+/// ForeclosureCase rows -- each its own legally meaningful county filing,
+/// never merged, never archived by this mechanism -- may represent the
+/// same underlying real-world foreclosure event. See
+/// NoticeDuplicateConfidence for what "may represent" means at each tier.
+/// caseAId is always the lexicographically smaller of the two case IDs
+/// (enforced by the detection engine, not the database) so a given pair
+/// only ever gets one row regardless of comparison order.
+model PossibleDuplicateNoticeLink {
+  id     String          @id @default(uuid())
+  caseAId String          @map("case_a_id")
+  caseA   ForeclosureCase @relation("DuplicateLinkCaseA", fields: [caseAId], references: [id], onDelete: Cascade)
+  caseBId String          @map("case_b_id")
+  caseB   ForeclosureCase @relation("DuplicateLinkCaseB", fields: [caseBId], references: [id], onDelete: Cascade)
+
+  confidence NoticeDuplicateConfidence
+  /// 0-1 combined weighted-evidence score behind `confidence` -- see
+  /// scoreDuplicateEvidence() in foreclosure-core for how it's computed.
+  score Float
+  /// Field names both cases agree on (e.g. "propertyAddress",
+  /// "legalDescription", "borrowerNames", "originalPrincipalAmount",
+  /// "saleDate", "lenderName", "deedOfTrustDate", "trusteeSaleTrackingNumber",
+  /// "rawTextFingerprint").
+  matchedFields String[] @default([]) @map("matched_fields")
+  /// Field names that explicitly DISAGREE between the two cases (e.g. a
+  /// different sale date) -- present, any conflict caps the confidence
+  /// tier regardless of how many fields matched.
+  conflictingFields String[] @default([]) @map("conflicting_fields")
+  /// Human-readable summary of the evidence, generated by the detection
+  /// engine.
+  explanation String?
+
+  status           NoticeDuplicateLinkStatus @default(OPEN)
+  reviewedByUserId String?                   @map("reviewed_by_user_id")
+  reviewedAt       DateTime?                 @map("reviewed_at")
+  reviewNotes      String?                   @map("review_notes")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([caseAId, caseBId])
+  @@index([caseAId])
+  @@index([caseBId])
+  @@index([status])
+  @@map("possible_duplicate_notice_links")
 }
 
 model ForeclosureSale {

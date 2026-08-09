@@ -45,3 +45,6 @@ export type { NoticeIdentityKey } from "./identity/noticeIdentity";
 
 export { chooseCanonicalCase, scoreCanonicalCandidate } from "./dedup/chooseCanonical";
 export type { CanonicalCandidateInput, CanonicalSelectionResult, ScoredCanonicalCandidate } from "./dedup/chooseCanonical";
+
+export { scoreDuplicateEvidence, rawTextFingerprintSimilarity } from "./duplicateDetection/scoring";
+export type { DuplicateComparisonCaseSnapshot, DuplicateConfidence, DuplicateEvidenceResult } from "./duplicateDetection/scoring";
