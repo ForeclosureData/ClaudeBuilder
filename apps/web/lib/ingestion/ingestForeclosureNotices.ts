@@ -22,6 +22,7 @@ import {
   generateForeclosureSummary,
   estimateRemainingBalance,
   buildNoticeIdentityKey,
+  normalizeCountyFilingNumber,
   type ResolutionInput,
   type RequestBudget,
 } from "@foreclosuredata/foreclosure-core";
@@ -59,6 +60,8 @@ export interface IngestionRunSummary {
   noticesPersisted: number;
   /** Notices whose processing threw an unexpected error (e.g. a data-shape surprise from an upstream source) -- recorded and skipped rather than aborting the whole run. */
   noticesFailed: number;
+  /** Count of notices skipped without any processing because targetFilingNumbers was set and this notice's filing number wasn't in it. 0 whenever targetFilingNumbers is omitted. */
+  noticesSkippedNotInTarget: number;
   noticesRequiringManualReview: number;
   /** Notices whose content came from local OCR (adapter-reported contentSource === "ocr"). 0 for adapters/runs that don't use OCR. */
   noticesOcrSuccess: number;
@@ -89,6 +92,21 @@ export interface IngestOptions {
   maxAiFallbackCallsPerRun?: number;
   /** Hard cap on Claude field-extraction spend (in cents) for this whole run. Unbounded when omitted (still subject to the monthly AI_EXTRACTION_MONTHLY_BUDGET_CENTS ceiling). */
   maxAiCostPerRunCents?: number;
+  /**
+   * When set, ONLY notices whose normalized county filing number is in this
+   * set are ever passed to processSingleNotice() (persisted, extracted,
+   * eligible for AI fallback) -- every other notice encountered while
+   * scanning a bundle is skipped outright, counted only in
+   * noticesSkippedNotInTarget. This is the precise mechanism for "process
+   * exactly N pre-selected notices, never more," which maxBundles/
+   * maxNoticesPerBundle alone can't guarantee: a bundle can (and does)
+   * interleave already-ingested duplicates and genuinely-new notices, so a
+   * bare page/count cap risks silently persisting extra new notices beyond
+   * the selection a pre-flight scan already proved non-overlapping. Filing
+   * numbers must already be normalized (normalizeCountyFilingNumber) —
+   * comparison is a raw Set membership check, not re-normalized here.
+   */
+  targetFilingNumbers?: Set<string>;
 }
 
 const AI_MONTHLY_BUDGET_CENTS = Number(process.env.AI_EXTRACTION_MONTHLY_BUDGET_CENTS ?? 5000);
@@ -115,6 +133,7 @@ export async function ingestForeclosureNotices(
     noticesDuplicate: 0,
     noticesPersisted: 0,
     noticesFailed: 0,
+    noticesSkippedNotInTarget: 0,
     noticesRequiringManualReview: 0,
     noticesOcrSuccess: 0,
     noticesContentClaudeFallback: 0,
@@ -236,6 +255,14 @@ export async function ingestForeclosureNotices(
     summary.bundlesProcessed++;
 
     for (const bundledNotice of bounded) {
+      if (options.targetFilingNumbers) {
+        const normalized = normalizeCountyFilingNumber(bundledNotice.countyFilingNumber);
+        if (!normalized || !options.targetFilingNumbers.has(normalized)) {
+          summary.noticesSkippedNotInTarget++;
+          continue;
+        }
+      }
+
       if (bundledNotice.lowConfidence) summary.noticesTranscriptionLowConfidence++;
       if (bundledNotice.contentSource === "ocr") summary.noticesOcrSuccess++;
       else if (bundledNotice.contentSource === "claude_vision") summary.noticesContentClaudeFallback++;

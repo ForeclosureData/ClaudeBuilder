@@ -43,6 +43,10 @@ on:
         description: "Render scale used for cover-sheet barcode detection (3.0 confirmed reliable; 1.6 was not)"
         required: false
         default: "3.0"
+      target_filing_numbers:
+        description: "Optional comma-separated filing-number allowlist (production mode only). When set, ONLY these notices are extracted/persisted/AI-eligible -- everything else scanned is skipped. Produced by the hidalgo-select-target workflow's output artifact."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -90,4 +94,5 @@ jobs:
           MAX_AI_FALLBACK_CALLS_PER_RUN: ${{ inputs.max_ai_fallback_calls }}
           MAX_AI_COST_PER_RUN_USD: ${{ inputs.max_ai_cost_usd }}
           BARCODE_SCAN_SCALE: ${{ inputs.barcode_scan_scale }}
+          TARGET_FILING_NUMBERS: ${{ inputs.target_filing_numbers }}
         run: pnpm --filter @foreclosuredata/web run ingest:hidalgo:ci

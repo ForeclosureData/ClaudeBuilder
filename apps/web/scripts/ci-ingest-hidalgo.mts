@@ -162,12 +162,34 @@ async function runDryRun(): Promise<void> {
 }
 
 async function runProduction(): Promise<void> {
+  // TARGET_FILING_NUMBERS, when set, is a comma-separated allowlist -- ONLY
+  // notices whose normalized filing number is in this set are ever
+  // extracted/persisted/eligible for AI fallback; everything else scanned
+  // is skipped outright (see IngestOptions.targetFilingNumbers in
+  // ingestForeclosureNotices.ts). This is how a bounded batch guarantees an
+  // exact "never more than N new records" count, produced by
+  // ci-select-hidalgo-target.mts's pre-flight scan.
+  const rawTargets = process.env.TARGET_FILING_NUMBERS;
+  const targetFilingNumbers = rawTargets
+    ? new Set(
+        rawTargets
+          .split(",")
+          .map((s) => normalizeCountyFilingNumber(s))
+          .filter((n): n is string => n !== null),
+      )
+    : undefined;
+
   console.log(`Mode: production (real database writes; Claude fallback enabled within run-level caps)`);
   console.log(
     `Bounds: maxBundles=${MAX_BUNDLES}, maxNoticesPerBundle=${MAX_NOTICES_PER_BUNDLE}, ` +
       `maxAiFallbackCallsPerRun=${MAX_AI_FALLBACK_CALLS_PER_RUN}, maxAiCostPerRunUsd=${MAX_AI_COST_PER_RUN_USD}, ` +
       `barcodeScanScale=${BARCODE_SCAN_SCALE}`,
   );
+  if (targetFilingNumbers) {
+    console.log(`Target filing-number allowlist active: ${targetFilingNumbers.size} filing number(s) -- ${JSON.stringify([...targetFilingNumbers])}`);
+  } else {
+    console.log(`No TARGET_FILING_NUMBERS set -- every notice split within the bounds above is eligible for extraction/persistence.`);
+  }
 
   const summary = await ingestForeclosureNotices("hidalgo-tx", hidalgoAdapter, {
     maxBundles: MAX_BUNDLES,
@@ -177,6 +199,7 @@ async function runProduction(): Promise<void> {
     barcodeScanScale: BARCODE_SCAN_SCALE,
     maxAiFallbackCallsPerRun: MAX_AI_FALLBACK_CALLS_PER_RUN,
     maxAiCostPerRunCents: Math.round(MAX_AI_COST_PER_RUN_USD * 100),
+    targetFilingNumbers,
   });
 
   console.log(`\n=== Run summary ===`);
@@ -185,6 +208,7 @@ async function runProduction(): Promise<void> {
   console.log(`Bundles skipped (already ingested, unchanged): ${summary.bundlesSkippedUnchanged}`);
   console.log(`Bundles failed: ${summary.bundlesFailed}`);
   console.log(`Notices split: ${summary.noticesSplit}`);
+  console.log(`Notices skipped (not in target allowlist): ${summary.noticesSkippedNotInTarget}`);
   console.log(`Notices OCR'd successfully: ${summary.noticesOcrSuccess}`);
   console.log(`Notices requiring content Claude-vision fallback: ${summary.noticesContentClaudeFallback}`);
   console.log(`Average OCR confidence: ${summary.averageOcrConfidence?.toFixed(1) ?? "n/a"}`);

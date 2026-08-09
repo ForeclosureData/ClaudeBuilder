@@ -1,0 +1,65 @@
+name: Hidalgo Pre-Flight Target Selection
+
+# Read-only pre-flight step for a bounded ingestion batch: scans the real
+# bundle PDF's cover-sheet barcodes (no OCR, no Anthropic calls, no database
+# writes) to select an exact number of genuinely new (not-yet-ingested)
+# filing numbers, and proves zero overlap against the current production
+# database before any AI/external spend happens. See
+# apps/web/scripts/ci-select-hidalgo-target.mts for the full mechanism.
+on:
+  workflow_dispatch:
+    inputs:
+      target_count:
+        description: "How many new filing numbers to select"
+        required: false
+        default: "50"
+      barcode_scan_scale:
+        description: "Render scale used for cover-sheet barcode detection"
+        required: false
+        default: "3.0"
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck ingestion packages
+        run: |
+          pnpm --filter @foreclosuredata/county-adapters exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/foreclosure-core exec tsc --noEmit -p .
+          pnpm --filter @foreclosuredata/web exec tsc --noEmit -p .
+
+      - name: Run pre-flight target selection (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          TARGET_COUNT: ${{ inputs.target_count }}
+          BARCODE_SCAN_SCALE: ${{ inputs.barcode_scan_scale }}
+        run: pnpm --filter @foreclosuredata/web run select:hidalgo-target:ci
+
+      - name: Upload selection artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidalgo-target-selection
+          path: apps/web/scripts/.hidalgo-target-selection.json
+          retention-days: 14
