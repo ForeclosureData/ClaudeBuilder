@@ -790,6 +790,262 @@ found zero incorrect matches.
 are NOT processed and scheduling remains OFF. This effort stops here and
 awaits explicit approval before any new ingestion or scheduling change.**
 
+## Fresh 25-notice production ingestion test (2026-08-09)
+
+The first real test of the current pipeline against notices it has never
+processed before, run via the existing `hidalgo-ingestion.yml` workflow
+(`mode=production`, `max_notices_per_bundle=25`,
+`max_ai_fallback_calls=25`, `max_ai_cost_usd=2.00` -- run
+[31288218973](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31288218973)).
+
+### 1. Selection
+
+A dry run (run
+[31287999914](https://github.com/ForeclosureData/ClaudeBuilder/actions/runs/31287999914))
+confirmed the current Hidalgo bundle (posting `72861`, posted
+2026-08-04) before spending anything:
+
+- Bundle total notice count: **282** (739 PDF pages, 282 barcode
+  boundaries detected)
+- Currently ingested unique notice count (pre-run): **82**
+- Estimated remaining un-ingested: **~200**
+
+True filing-number selection isn't possible in advance -- the pipeline
+splits notices in page order, bounded by `max_notices_per_bundle`, and
+lets its own duplicate check (composite `countyId` + normalized
+`countyFilingNumber` identity, DB-level unique constraint) decide what's
+actually new. The real run's own numbers prove the outcome: **25 records
+created, 0 duplicates skipped**. Filing numbers 117630-117710 (see table
+below) -- a lower, entirely distinct range from the 82-baseline's
+117716-118236, with zero overlap confirmed both by the pipeline's own
+dedup count and by a direct DB query for the exact 82 known filing
+numbers.
+
+### 2-3. Pipeline run & safety controls
+
+Ran the full production path (discover → split → OCR → deterministic
+extraction → bounded AI fallback → persist → property resolution → CAD →
+conflict gating → valuation → manual-review routing) with every existing
+safeguard active and unmodified: per-notice isolation, CAD/AI request
+and dollar caps, owner-conflict/subdivision-conflict/lot-block-conflict
+gates, the strategy-isolation fix from the CAD robustness work (one
+failed search no longer discards an earlier one's results), minimum
+confidence/margin thresholds, and the human-approval gate for
+unresolved-address cases. Nothing was modified during the run; no hard
+safety/data-corruption issue occurred (see Safety verification below),
+so the "do not touch resolver/scoring" constraint was never invoked.
+
+### 5. Extraction metrics
+
+| | |
+|---|---|
+| Notices attempted | 25 |
+| Successfully ingested | 25 |
+| Failed (unexpected error) | 0 |
+| Duplicates skipped | 0 |
+| OCR success rate | 100% |
+| Average OCR confidence | 91.0 |
+| Average overall extraction confidence | 87.5% |
+| Borrower/grantor extraction success | 16 / 25 (64%) |
+| Lender/beneficiary extraction success | 23 / 25 (92%) |
+| Mortgage servicer extraction success | 18 / 25 (72%) |
+| Sale-date extraction success | 20 / 25 (80%) |
+| Original-principal extraction success | 8 / 25 (32%) |
+| Legal-description extraction success | 20 / 25 (80%) |
+| Notice-stated property-address rate | 14 / 25 (56%) |
+| AI fallback calls / rate | 9 / 25 (36%) |
+| Anthropic spend | **$0.45** |
+
+**A real, systemic finding: all 9 AI-fallback calls failed schema
+validation and were rejected (0 merged).** Every one of the 9 error
+messages is missing the exact same two keys --
+`borrowerNames`/`grantorNames` -- from the AI's JSON response, plus a
+varying mix of other fields (`originalPrincipalAmount`,
+`instrumentNumber`, `recordingDate`, `propertyId`, `saleLocation`,
+`substituteTrustee`, `originalMortgagee`, `lenderName`). The failure mode
+is identical and 100% reproducible across all 9 calls -- this reads as a
+genuine prompt/schema mismatch in the field-extraction fallback path
+(the AI is never being asked for, or never returning,
+`borrowerNames`/`grantorNames` at the response's top level), not random
+data-quality noise. It fails **safe**: the whole malformed response is
+discarded rather than partially merged, so nothing incorrect was
+persisted -- but it does mean these 9 notices are left with less data
+than the pipeline should have been able to recover, and $0.45 was spent
+for zero yield. This directly suppresses investor-completeness (see
+section 6).
+
+### 6. Investor-critical completeness
+
+| Classification | Count | % |
+|---|---|---|
+| FULLY USEFUL | 0 | 0% |
+| USEFUL | 14 | 56% |
+| LIMITED | 11 | 44% |
+
+**Zero FULLY USEFUL records** -- every case that has a usable address
+and sale date (the USEFUL bar) is missing either a real borrower name or
+the original principal amount, so none clears the stricter FULLY USEFUL
+bar (borrower + principal + valuation-if-CAD-confirmed, on top of
+address/sale date/source notice). This is directly traceable to the
+extraction gap above: of the 11 cases missing a real borrower name
+(`"Unknown owner"` placeholder), 9 are exactly the AI-fallback-failure
+cases; only 17/25 have any principal amount at all. Every one of the 25
+has its source notice (`SourceDocument`) -- that field is never missing.
+
+### 7. Property-resolution metrics
+
+| | Count |
+|---|---|
+| Address resolved from notice (explicit/"commonly known as") | 14 |
+| Total usable address (notice-stated + CAD-inferred) | 17 |
+| **CAD parcel confirmed** | **7** |
+| CAD candidate found, requires human approval | 11 |
+| No CAD match | 7 |
+| Owner-conflict-gated | 3 |
+| Subdivision/lot/block-conflict-gated | 0 |
+| Ambiguous match (multiple candidates, no winner) | 4 |
+| Structural no-address (no Property record at all) | 8 |
+| Suspicious/non-property-address rejections | 0 |
+
+Sanity check: 7 confirmed + 11 awaiting approval + 7 no-match = 25. ✓
+
+A distinction worth flagging explicitly: **3 of the 7 CAD-confirmed
+parcels had no address stated in the notice at all** -- the live
+ingestion pipeline's resolver auto-resolved these purely via a confident
+legal-description CAD match (`addressResolutionMethod:
+LEGAL_DESCRIPTION_MATCH`, `matchedFields` including `subdivision`+`lot`
+or `subdivision`+`lot`+`ownerName`). This is different, and more
+permissive, than the derived-data regeneration script's deliberately
+conservative choice (which never auto-writes `Property` for a case with
+no stated address) -- it's the live pipeline's own pre-existing resolver
+behavior (unchanged, unmodified here), not a bug, but worth recording
+precisely since it means "CAD parcel confirmed" and "address resolved
+from notice" are not the same set.
+
+CAD requests per notice/lookup timing aren't currently surfaced by the
+live pipeline's run summary (unlike the custom regeneration scripts,
+which explicitly track and cap a shared request budget) -- this is a
+real observability gap worth closing, not a number I'm willing to
+estimate here. The underlying per-notice cap
+(`HIDALGO_CAD_MAX_REQUESTS_PER_NOTICE`, default 10) and the existing
+2-second inter-request rate limit were both active throughout; nothing
+in the run's behavior (timing, error patterns, candidate counts up to
+103 for one wide subdivision search) suggested either was exceeded or
+misbehaving.
+
+### 8. Valuation metrics
+
+All 7 CAD-confirmed parcels got a complete valuation, identical pattern
+to the 82-baseline regeneration:
+
+| | |
+|---|---|
+| Market value available | 7 / 7 |
+| Appraised value available | 7 / 7 |
+| Land value available | 7 / 7 |
+| Improvement value available | 7 / 7 |
+| 2027 populated | 0 |
+| 2026 fallback | 7 |
+| Other fallback year | 0 |
+| Confirmed parcel with missing valuation | 0 |
+
+### 9. Manual-review metrics
+
+| | |
+|---|---|
+| Total cases with a manual-review task | 19 / 25 (76%) |
+| One-click-ready candidate (0.97 confidence, none this batch) | 0 |
+| Genuinely ambiguous (`MULTIPLE_APPRAISAL_MATCHES`) | 4 |
+| Structural no-address (`NO_ADDRESS_RESOLVED`) | 8 |
+| Conflict-driven (`CAD_OWNER_CONFLICT`) | 3 |
+| Extraction-quality-driven (`BORROWER_NAME_CONFLICT`, `SALE_DATE_CONFLICT`) | 9, 5 |
+
+Reading on "is manual review mostly workflow, or unresolved matching
+quality": **mixed, and mostly not a CAD-matching problem.** Only 3 of 19
+review-triggering reasons are CAD-driven (owner conflict); the largest
+contributors are structural (8 cases genuinely have no address in the
+notice -- expected, matches the 82-baseline pattern) and
+extraction-quality-driven (9 borrower-name conflicts, 5 sale-date
+conflicts -- both traceable back to the same AI-fallback bug from
+section 5). Fixing that one bug would likely clear a meaningful share of
+the extraction-quality review load without touching CAD/resolver logic
+at all.
+
+### 10. Manual safety verification -- all 7 CAD-confirmed parcels (100%, not a sample)
+
+| Filing # | Notice address | CAD situs | Notice legal (subdivision/lot) | CAD subdivision/lot | Owner match | Classification |
+|---|---|---|---|---|---|---|
+| 117632 | 1416 W MCKINLEY AVE, ALTON, TX | 1416 MCKINLEY AVE | Dos Valles Subdivision Phase 2 / 68 | DOS VALLES / 68 | Exact | **CONFIRMED CORRECT** |
+| 117635 | *(none stated)* | 3304 E TRUMAN AVE, TX | INDIAN HARBOR SUBDIVISION / 39 | INDIAN HARBOR / 39 | Exact (primary borrower) | **CONFIRMED CORRECT** |
+| 117642 | 813 ORANGE ST, MERCEDES, TX | 813 ORANGE ST, TX | WOODLAWN ACRES / 2 | WOODLAWN ACRES / 2 | Exact | **CONFIRMED CORRECT** |
+| 117648 | *(none stated)* | 1407 MAYBERRY ST, EDINBURG, TX | REDBUD ESTATES PHASE 3 / 1 | REDBUD ESTATES / 1 | Exact | **CONFIRMED CORRECT** (3-field match: subdivision+lot+owner) |
+| 117659 | 1902 Seagull Lane | 1908 SEAGULL LN, TX | TANGLEWOOD AT BENTSEN PALM PHASE I / 5 | TANGLEWOOD AT BENTSEN PALM / 5 | Exact | **LIKELY CORRECT WITH MINOR DISCREPANCY** -- house number differs (1902 vs 1908); subdivision, lot, and owner name all corroborate exactly, but the address-number mismatch itself is worth a human glance |
+| 117702 | 1604 Optimum Dr, Edinburg, TX | 1604 E OPTIMUM DR, EDINBURG, TX | THE HEIGHTS ON WISCONSIN PHASE II / 18 | HEIGHTS ON WISCONSIN / 18 | Exact | **CONFIRMED CORRECT** (CAD adds a directional the notice omits) |
+| 117708 | *(none stated)* | 2408 HEATHER AVE, EDINBURG, TX | DANIELLE ESTATES / 57 | DANIELLE ESTATES / 57 | Exact | **CONFIRMED CORRECT** (3-field match: subdivision+lot+owner, out of 103 candidates in that subdivision) |
+
+**Observed false-match rate: 0 / 7 (0%).** 6 of 7 confirmed correct
+outright; 1 flagged for a minor discrepancy that doesn't change the
+underlying match (subdivision + lot + owner name all still agree). No
+INCORRECT classification occurred, so the "stop and do not process
+further" condition was not triggered.
+
+### 11. Coverage accounting
+
+| | |
+|---|---|
+| Total detected notices in current Hidalgo bundle | 282 |
+| Total unique notices now ingested (82 baseline + 25 new) | 107 |
+| Estimated notices remaining | ~175 |
+| **Ingestion coverage** | **107 / 282 = 37.9%** |
+
+Kept explicitly distinct from CAD enrichment: of the 107 total ingested
+cases, 33 have a CAD-confirmed parcel (26 from the baseline regeneration
++ 7 from this run) -- an enrichment question, not a coverage one.
+**"Did ForeclosureData capture every foreclosure notice?" is a 37.9%
+answer; "did it successfully resolve every captured property?" is a
+separate, much stronger number** (33/107 confirmed outright, another
+50+ with a stored candidate awaiting one human click).
+
+### 12. Performance
+
+| | |
+|---|---|
+| Total runtime (this run) | 625.9s (~10.4 min) |
+| Notices split / OCR'd / persisted | 25 / 25 / 25 |
+| Anthropic calls | 9 (all rejected by schema validation, 0 merged) |
+| Anthropic cost | $0.45 |
+| CAD/external cost | $0.00 (public data, no paid tier) |
+| Total CAD requests | not currently surfaced by the live pipeline's logging (see section 7) |
+
+### 13. Final recommendation
+
+**B. ONE TARGETED FIX REQUIRED BEFORE MORE NEW INGESTION.**
+
+Evidence for what's working: property resolution and CAD safety held up
+completely under real, previously-unseen data -- 0/7 incorrect
+auto-confirmed parcels, the owner-conflict and ambiguous-match gates
+both fired correctly, zero suspicious/non-property addresses, zero
+duplicate `ForeclosureCase` rows, zero data corruption, zero uncontrolled
+CAD/AI behavior. None of the section 4 stop conditions occurred. On the
+property-resolution dimension alone, this would support "A."
+
+Evidence for the targeted fix: the AI-fallback field-extraction path
+failed schema validation **9 for 9** (100%), always missing the same two
+keys, for $0.45 with zero yield -- and that gap has a direct, measurable
+effect on investor-completeness (0 of 25 records reach FULLY USEFUL,
+largely because borrower name and original principal can't both be
+recovered for the harder-to-extract notices). This is a fixable,
+well-isolated extraction bug, not a resolver/scoring/safety issue -- it
+never touched anything this session was asked not to touch, and it fails
+safe rather than corrupting data. But scaling ingestion further before
+fixing it means paying real Anthropic cost for records that will keep
+landing short of their achievable completeness.
+
+**Per the approved scope, the remaining ~175 notices are NOT processed
+and scheduling remains OFF. This effort stops here and awaits explicit
+approval before any further ingestion, the AI-fallback fix, or a
+scheduling change.**
+
 ## Monitoring (MVP-appropriate, not enterprise APM)
 
 - Admin dashboard (`/admin`) surfaces manual review queue and county
