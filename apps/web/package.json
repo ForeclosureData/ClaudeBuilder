@@ -11,6 +11,7 @@
     "test": "vitest run",
     "ingest:hidalgo:ci": "tsx scripts/ci-ingest-hidalgo.mts",
     "select:hidalgo-target:ci": "tsx scripts/ci-select-hidalgo-target.mts",
+    "report:batch50:ci": "tsx scripts/ci-report-batch50.mts",
     "pilot:regenerate-10": "tsx scripts/pilot-regenerate-10.mts",
     "verify:118198": "tsx scripts/verify-118198.mts",
     "regenerate:remaining-72": "tsx scripts/regenerate-remaining-72.mts",
