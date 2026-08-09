@@ -4,6 +4,7 @@ import { parseLabeledDate, parseLabeledTime } from "./dates";
 import { detectStatedPropertyAddress } from "./addresses";
 import { parseLegalDescription } from "./legalDescription";
 import { extractLenderParties } from "./lenderExtraction";
+import { mergeDanglingNameSuffixes } from "../nameSuffixes";
 
 /**
  * Layer 1 (deterministic) extraction for a standard Texas
@@ -227,11 +228,15 @@ function looksLikeNameList(text: string): boolean {
 const MARITAL_STATUS_DESCRIPTOR = /^(?:an?\s+)?(?:unmarried|married|single)\s+(?:man|woman|person)$|^husband$|^wife$|^husband and wife$/i;
 
 function splitNames(raw: string): string[] {
-  return cleanName(raw)
+  const names = cleanName(raw)
     .split(/\s+AND\s+|\s+and\/or\s+|,\s*/i)
     .map((n) => n.trim())
     .filter(Boolean)
     .filter((n) => !MARITAL_STATUS_DESCRIPTOR.test(n));
+  // Splitting on comma also breaks "Ricardo Ruiz, Jr." into two pieces --
+  // reattach a dangling suffix-only piece to the name before it rather
+  // than keeping it as a phantom second person (real HID-117707 case).
+  return mergeDanglingNameSuffixes(names);
 }
 
 /**

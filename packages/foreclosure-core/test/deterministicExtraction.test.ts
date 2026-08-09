@@ -390,6 +390,14 @@ County Administrative Building.`;
     expect(result.saleDate.value).toBe("2026-08-04");
   });
 
+  it("reattaches a dangling name-suffix piece (e.g. 'Jr.') to the preceding borrower instead of treating it as a second person (real HID-117707 defect)", () => {
+    const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
+Grantor: Sample Person, Jr., a single person
+Date of Sale: September 1, 2026`;
+    const result = extractDeterministic(notice);
+    expect(result.borrowerNames.value).toEqual(["Sample Person, Jr."]);
+  });
+
   it("still returns null rather than guessing when no recognizable grantor phrasing is present", () => {
     const notice = `NOTICE OF SUBSTITUTE TRUSTEE SALE
 Property Address: 456 Sample Ave, Pharr, Texas 78577
