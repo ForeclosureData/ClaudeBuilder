@@ -69,6 +69,12 @@ async function main() {
   console.log(`=== Filing numbers by status ===`);
   console.log(JSON.stringify(filingsByStatus, null, 2));
 
+  console.log(`\n=== WITHHELD detail (raw documents/sales, for root-cause spot-check) ===`);
+  const withheldCases = cases.filter((c) => computePublicationStatus(toPublicationInput(c)).status === "WITHHELD");
+  for (const c of withheldCases) {
+    console.log(`${c.caseNumber}: documents=${c.documents.length}, sales=${JSON.stringify(c.sales)}`);
+  }
+
   console.log(`\nDone.`);
 }
 
