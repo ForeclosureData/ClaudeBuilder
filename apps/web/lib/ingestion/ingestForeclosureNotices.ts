@@ -23,6 +23,7 @@ import {
   estimateRemainingBalance,
   buildNoticeIdentityKey,
   normalizeCountyFilingNumber,
+  isRepeatedAcrossCases,
   type ResolutionInput,
   type RequestBudget,
 } from "@foreclosuredata/foreclosure-core";
@@ -422,7 +423,29 @@ async function processSingleNotice(params: {
   const extracted = pipelineResult.extracted;
 
   const legalDescription = parseLegalDescription(bundledNotice.noticeText);
-  const statedAddress = detectStatedPropertyAddress(bundledNotice.noticeText);
+  let statedAddress = detectStatedPropertyAddress(bundledNotice.noticeText);
+
+  // Generic defense against trustee/servicer/law-office boilerplate slipping
+  // through as a "property address" (see addressReuseDetection.ts): two real
+  // properties never share an exact street address, so a candidate that
+  // exactly matches an address already attributed to a DIFFERENT case in
+  // this county is treated as not stated at all -- falls through to
+  // legal-description-based resolution rather than publishing a wrong
+  // address. Never blocks ingestion; only downgrades this one field.
+  if (statedAddress) {
+    const otherAddressesInCounty = (
+      await prisma.property.findMany({
+        where: { countyId: county.id, propertyStreetAddress: { not: null } },
+        select: { propertyStreetAddress: true },
+        distinct: ["propertyStreetAddress"],
+      })
+    )
+      .map((p) => p.propertyStreetAddress)
+      .filter((a): a is string => a !== null);
+    if (isRepeatedAcrossCases(statedAddress.text, otherAddressesInCounty)) {
+      statedAddress = null;
+    }
+  }
 
   const resolutionInput: ResolutionInput = {
     statedPropertyAddress: statedAddress?.text ?? null,

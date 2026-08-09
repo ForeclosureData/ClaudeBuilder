@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { ConfidenceBadge, EstimatedBadge } from "@/components/properties/confidence-badge";
 import { SaveButton } from "@/components/properties/save-button";
 import { CorrectionReportForm } from "@/components/properties/correction-report-form";
-import { formatCurrencyCents, formatDate, daysUntil, formatBorrowerName } from "@/lib/utils";
+import { formatCurrencyCents, formatDate, daysUntil, formatBorrowerName, formatOriginalPrincipal } from "@/lib/utils";
 import { saleStatusLabels, addressResolutionMethodLabels, fieldSourceLabels } from "@foreclosuredata/config";
 
 const COUNTY_VALUES_DISCLOSURE =
@@ -121,7 +121,7 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
               <Field label="Borrower" value={unlocked ? formatBorrowerName(fc.borrower?.fullName) : "Upgrade to view"} />
               <Field label="Current owner" value={unlocked ? fc.currentOwner?.fullName ?? "Unknown" : "Upgrade to view"} />
               <Field label="Lender" value={unlocked ? fc.loan?.currentMortgagee?.name ?? fc.loan?.originalLender?.name ?? "Unknown" : "Upgrade to view"} />
-              <Field label="Original principal" value={formatCurrencyCents(fc.loan?.originalPrincipalAmountCents ?? null)} />
+              <Field label="Original principal" value={formatOriginalPrincipal(fc.loan?.originalPrincipalAmountCents ?? null)} />
               <Field label="Current balance">
                 {fc.loan?.currentPrincipalBalanceCents !== null && fc.loan?.currentPrincipalBalanceCents !== undefined ? (
                   formatCurrencyCents(fc.loan.currentPrincipalBalanceCents)

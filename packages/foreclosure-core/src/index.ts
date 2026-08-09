@@ -4,6 +4,7 @@ export type { LenderExtractionResult } from "./extraction/deterministic/lenderEx
 export { parseCurrencyToCents, findAllCurrencyAmountsCents } from "./extraction/deterministic/currency";
 export { parseLabeledDate, parseFirstDate, parseLabeledTime } from "./extraction/deterministic/dates";
 export { detectStatedPropertyAddress, extractLabeledMailingAddress } from "./extraction/deterministic/addresses";
+export { normalizeAddressForReuseCheck, isRepeatedAcrossCases } from "./extraction/deterministic/addressReuseDetection";
 export { parseLegalDescription } from "./extraction/deterministic/legalDescription";
 export type { ParsedLegalDescription } from "./extraction/deterministic/legalDescription";
 

@@ -35,3 +35,16 @@ export function formatBorrowerName(name: string | null | undefined): string {
   if (!name || name.trim().toLowerCase() === "unknown owner") return "Owner unavailable";
   return name;
 }
+
+/**
+ * Many real trustee-notice templates simply never state an original
+ * principal amount -- a genuine absence in the source document, not an
+ * extraction error (see the pre-scale audit's principal-completeness
+ * findings). Distinguishes that from formatCurrencyCents's generic
+ * "Unknown" so investor-facing UI reads as an honest, expected data gap
+ * rather than something that looks broken.
+ */
+export function formatOriginalPrincipal(cents: number | null | undefined): string {
+  if (cents === null || cents === undefined) return "Original loan amount unavailable";
+  return formatCurrencyCents(cents);
+}
