@@ -29,8 +29,9 @@
  */
 import { hidalgoAdapter, discoverPropertySalePostings, splitHidalgoBundle } from "@foreclosuredata/county-adapters";
 import { ocrPages, shutdownOcrWorker } from "@foreclosuredata/county-adapters/src/hidalgo/ocr.ts";
-import { runExtractionPipeline } from "@foreclosuredata/foreclosure-core";
+import { runExtractionPipeline, normalizeCountyFilingNumber } from "@foreclosuredata/foreclosure-core";
 import { ingestForeclosureNotices } from "../lib/ingestion/ingestForeclosureNotices.ts";
+import { prisma } from "@foreclosuredata/database";
 
 const MODE = (process.env.INGEST_MODE ?? "dry-run").toLowerCase();
 const MAX_BUNDLES = intEnv("MAX_BUNDLES", 1);
@@ -117,6 +118,7 @@ async function runDryRun(): Promise<void> {
   let ocrConfidenceCount = 0;
   let deterministicOnlyCount = 0;
   let wouldNeedAiFallbackCount = 0;
+  const filingNumbersInOrder: Array<string | null> = [];
 
   for (const notice of result.notices) {
     if (notice.contentSource === "ocr") ocrSuccessCount++;
@@ -124,6 +126,7 @@ async function runDryRun(): Promise<void> {
       ocrConfidenceSum += notice.ocrConfidence;
       ocrConfidenceCount++;
     }
+    filingNumbersInOrder.push(normalizeCountyFilingNumber(notice.documentNumber));
 
     const pipelineResult = await runExtractionPipeline(notice.noticeText, NEVER_SPEND_BUDGET);
     if (pipelineResult.needsManualReview) wouldNeedAiFallbackCount++;
@@ -136,7 +139,26 @@ async function runDryRun(): Promise<void> {
   console.log(`Would require Claude field-extraction fallback: ${wouldNeedAiFallbackCount}`);
   console.log(`Anthropic cost: $0.00 (dry run never calls the API)`);
 
+  // Read-only DB lookup (no writes) -- reports which of the notices found
+  // in this scan (in bundle-page order, exactly what a bounded production
+  // run would process next) are already-ingested vs genuinely new, so a
+  // selection can be proven non-overlapping BEFORE any production run.
+  const distinctFilingNumbers = [...new Set(filingNumbersInOrder.filter((n): n is string => n !== null))];
+  const existingCases = await prisma.foreclosureCase.findMany({
+    where: { countyFilingNumber: { in: distinctFilingNumbers }, archivedAt: null },
+    select: { countyFilingNumber: true },
+  });
+  const alreadyIngested = new Set(existingCases.map((c) => c.countyFilingNumber));
+  const newFilingNumbers = distinctFilingNumbers.filter((fn) => !alreadyIngested.has(fn));
+
+  console.log(`\n=== Filing-number identity check (read-only, no writes) ===`);
+  console.log(`Filing numbers found in this scan (in bundle-page order): ${JSON.stringify(filingNumbersInOrder)}`);
+  console.log(`Distinct non-null filing numbers: ${distinctFilingNumbers.length}`);
+  console.log(`Already ingested (would be skipped as duplicates): ${alreadyIngested.size} -> ${JSON.stringify([...alreadyIngested])}`);
+  console.log(`Genuinely new (not yet in the database): ${newFilingNumbers.length} -> ${JSON.stringify(newFilingNumbers)}`);
+
   await shutdownOcrWorker();
+  await prisma.$disconnect();
 }
 
 async function runProduction(): Promise<void> {
