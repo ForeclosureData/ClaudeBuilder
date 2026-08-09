@@ -1,0 +1,48 @@
+name: Hidalgo Publication Status Report
+
+# Read-only recalculation of investor-visible inventory under the
+# publication-readiness model. Zero database writes, zero Anthropic calls.
+# See apps/web/scripts/ci-report-publication-status.mts.
+on:
+  workflow_dispatch:
+    inputs:
+      include_legacy:
+        description: "true = include the 82 legacy-seeded cases too. false (default) = only the 282 automated-ingestion cases."
+        required: false
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run publication-status report (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          INCLUDE_LEGACY: ${{ inputs.include_legacy }}
+        run: pnpm --filter @foreclosuredata/web run report:publication-status:ci
