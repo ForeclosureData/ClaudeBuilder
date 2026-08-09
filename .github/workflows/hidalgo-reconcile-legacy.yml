@@ -1,0 +1,38 @@
+name: Hidalgo Legacy Reconciliation
+
+# Read-only comparison of the 82 legacy-seeded ForeclosureCase rows against
+# the 282 automated-ingestion cases. Zero database writes, zero Anthropic
+# calls. See apps/web/scripts/ci-reconcile-legacy.mts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run legacy reconciliation (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run reconcile:hidalgo-legacy:ci
