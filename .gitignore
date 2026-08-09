@@ -23,7 +23,7 @@ build/
 *.tsbuildinfo
 
 # Pre-flight ingestion target-selection output (generated, not source)
-apps/web/scripts/.hidalgo-target-selection.json
+apps/web/scripts/hidalgo-target-selection.json
 
 # Env files
 .env

@@ -61,5 +61,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hidalgo-target-selection
-          path: apps/web/scripts/.hidalgo-target-selection.json
+          path: apps/web/scripts/hidalgo-target-selection.json
           retention-days: 14

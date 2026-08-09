@@ -22,9 +22,24 @@
  *  - BARCODE_SCAN_SCALE (default 3.0): same as ci-ingest-hidalgo.mts.
  *
  * Output: a full read-only report to stdout, plus
- * apps/web/scripts/.hidalgo-target-selection.json containing the selected
+ * apps/web/scripts/hidalgo-target-selection.json containing the selected
  * filing numbers and the exact maxNoticesPerBundle window needed to reach
  * them, for the next step (the bounded production run) to consume.
+ *
+ * IMPORTANT non-overlap gap this script closes: the original 82 real
+ * Hidalgo cases (packages/database/prisma/hidalgo-real-cases.ts, seeded
+ * once early in this project's history) were written to production by an
+ * earlier revision of prisma/seed.ts that did not populate
+ * ForeclosureCase.countyFilingNumber -- confirmed by the live count
+ * (82 seeded + N pipeline-ingested rows == total ForeclosureCase count,
+ * but only N rows have a non-null countyFilingNumber). A DB-only "already
+ * ingested" check is therefore blind to those 82 legacy rows and could
+ * select a filing number that's actually already represented in the
+ * database under a different (seed) code path, producing a real duplicate
+ * ForeclosureCase on ingestion. This script closes that gap by ALSO
+ * excluding every docNumber in hidalgo-real-cases.ts directly from the
+ * source file, independent of what the database's countyFilingNumber
+ * column currently says.
  */
 import { writeFile } from "node:fs/promises";
 import { hidalgoAdapter, discoverPropertySalePostings } from "@foreclosuredata/county-adapters";
@@ -32,10 +47,11 @@ import { loadPdf } from "@foreclosuredata/county-adapters/src/hidalgo/pdfRender.
 import { detectDocumentBoundaries, boundariesToNoticeRanges } from "@foreclosuredata/county-adapters/src/hidalgo/barcodeSplit.ts";
 import { normalizeCountyFilingNumber } from "@foreclosuredata/foreclosure-core";
 import { prisma } from "@foreclosuredata/database";
+import { realHidalgoCases } from "../../../packages/database/prisma/hidalgo-real-cases.ts";
 
 const TARGET_COUNT = intEnv("TARGET_COUNT", 50);
 const BARCODE_SCAN_SCALE = floatEnv("BARCODE_SCAN_SCALE", 3.0);
-const OUTPUT_PATH = new URL("./.hidalgo-target-selection.json", import.meta.url);
+const OUTPUT_PATH = new URL("./hidalgo-target-selection.json", import.meta.url);
 
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -62,9 +78,19 @@ async function main() {
     select: { countyFilingNumber: true },
   });
   const existingFilingNumbers = new Set(existingRows.map((r) => r.countyFilingNumber).filter((n): n is string => n !== null));
+
+  // Legacy-seed exclusion (see module comment): sourced from the seed data
+  // file directly, not the database, because the 82 originally-seeded real
+  // Hidalgo cases are known to have a null countyFilingNumber column in the
+  // live database and would otherwise be invisible to the check above.
+  const legacySeedFilingNumbers = new Set(
+    realHidalgoCases.map((c) => normalizeCountyFilingNumber(c.docNumber)).filter((n): n is string => n !== null),
+  );
+
   console.log(`=== Current production state ===`);
   console.log(`Unique ForeclosureCase rows (non-archived): ${totalCaseCount}`);
   console.log(`Unique non-null county filing numbers currently ingested: ${existingFilingNumbers.size}`);
+  console.log(`Legacy seed dataset filing numbers (excluded regardless of DB column state): ${legacySeedFilingNumbers.size}`);
 
   // Step 2: discover bundle posting(s) -- same discovery call the dry-run
   // and production modes use.
@@ -83,6 +109,7 @@ async function main() {
   // (the ~282-notice monthly bundle), so this loop is expected to run once.
   const selected: string[] = [];
   const scannedInOrder: Array<{ documentNumber: string | null; normalized: string | null; postingId: string }> = [];
+  const legacySeedMatchesSkipped: string[] = [];
   let windowSizeInLatestBundle = 0; // how many notices (in page order) of the LAST scanned posting must be split to reach the last selected filing number
   let bundleNoticeCountForCoverage: number | null = null;
 
@@ -123,10 +150,15 @@ async function main() {
 
       if (selected.length >= TARGET_COUNT) continue; // keep scanning to report full bundle stats, but stop selecting
 
-      if (normalized && !existingFilingNumbers.has(normalized) && !selected.includes(normalized)) {
-        selected.push(normalized);
-        windowSizeInLatestBundle = windowCursor;
+      if (!normalized || existingFilingNumbers.has(normalized) || selected.includes(normalized)) continue;
+
+      if (legacySeedFilingNumbers.has(normalized)) {
+        legacySeedMatchesSkipped.push(normalized);
+        continue;
       }
+
+      selected.push(normalized);
+      windowSizeInLatestBundle = windowCursor;
     }
   }
 
@@ -139,7 +171,8 @@ async function main() {
   console.log(`Distinct non-null normalized filing numbers found: ${distinctScanned.size}`);
   console.log(`Notices with unreadable/missing filing-number barcode: ${missingBarcode}`);
   console.log(`Already-ingested filing numbers found in scan: ${alreadyIngestedInScan.length}`);
-  console.log(`Genuinely new filing numbers found in scan: ${distinctScanned.size - alreadyIngestedInScan.length}`);
+  console.log(`Legacy seed-dataset filing numbers skipped (matched hidalgo-real-cases.ts, not DB): ${legacySeedMatchesSkipped.length}${legacySeedMatchesSkipped.length ? " -> " + JSON.stringify(legacySeedMatchesSkipped) : ""}`);
+  console.log(`Genuinely new filing numbers found in scan: ${distinctScanned.size - alreadyIngestedInScan.length - legacySeedMatchesSkipped.length}`);
 
   console.log(`\n=== Selection ===`);
   console.log(`Selected ${selected.length} of ${TARGET_COUNT} requested new filing numbers.`);
@@ -170,7 +203,19 @@ async function main() {
     await prisma.$disconnect();
     return;
   }
-  console.log(`PASSED: zero overlap confirmed. Selection is safe to use for the bounded production run.`);
+
+  // Second, independent re-check against the legacy seed dataset directly
+  // (see module comment) -- catches the case a DB-only check would miss.
+  const legacySeedOverlap = selected.filter((fn) => legacySeedFilingNumbers.has(fn));
+  console.log(`Selected filing numbers re-checked against hidalgo-real-cases.ts (legacy seed, bypasses the DB column): ${selected.length}`);
+  console.log(`Matches found (must be 0): ${legacySeedOverlap.length}`);
+  if (legacySeedOverlap.length > 0) {
+    console.error(`FATAL: legacy-seed non-overlap proof FAILED -- ${legacySeedOverlap.length} of the selected filing numbers match a legacy seeded case: ${JSON.stringify(legacySeedOverlap)}`);
+    process.exitCode = 1;
+    await prisma.$disconnect();
+    return;
+  }
+  console.log(`PASSED: zero overlap confirmed against both the database and the legacy seed dataset. Selection is safe to use for the bounded production run.`);
 
   console.log(`\n=== Coverage context ===`);
   console.log(`Total bundle notices (this scan): ${bundleNoticeCountForCoverage ?? "unknown"}`);
