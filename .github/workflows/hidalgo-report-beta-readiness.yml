@@ -1,0 +1,40 @@
+name: Hidalgo Beta Readiness Report
+
+# Phase 4 of the beta-readiness pass: recalculates the full investor
+# inventory after the human-review and visible-listing corrections, plus
+# a final address-pollution re-scan of the current visible set. Read-only,
+# zero writes, zero Anthropic calls. See
+# apps/web/scripts/ci-report-beta-readiness.mts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run beta-readiness report (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run report:beta-readiness:ci
