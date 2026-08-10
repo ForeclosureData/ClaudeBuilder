@@ -7,7 +7,7 @@ import { getCurrentProfileId } from "@/lib/supabase/server";
 import { loadFieldEvidence } from "@/lib/extracted-fields";
 import { PUBLICATION_EXTRA_INCLUDE, isPubliclyVisible } from "@/lib/publicationVisibility";
 import { toInvestorListing } from "@/lib/investor/adapter";
-import { formatDaysUntil, formatEquity, formatMoney, formatShortDate, PROPERTY_TYPE_LABELS } from "@/lib/investor/format";
+import { addressDisplayText, formatDaysUntil, formatEquity, formatMoney, formatShortDate, PROPERTY_TYPE_LABELS } from "@/lib/investor/format";
 import { Card, CardContent } from "@/components/ui/card";
 import { PropertyMetric } from "@/components/investor/ui/property-metric";
 import { StatusBadge } from "@/components/investor/ui/status-badges";
@@ -77,8 +77,14 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
         <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900 sm:p-6">
           <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
             <div>
-              <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-50 sm:text-3xl">
-                {listing.address ?? "Address not yet available"}
+              <h1
+                className={
+                  listing.address
+                    ? "text-2xl font-semibold text-neutral-900 dark:text-neutral-50 sm:text-3xl"
+                    : "text-2xl font-semibold italic text-neutral-400 dark:text-neutral-500 sm:text-3xl"
+                }
+              >
+                {addressDisplayText(listing)}
               </h1>
               <p className="mt-1 text-neutral-500">
                 {listing.city ?? listing.subdivision ?? property.county.name}, {listing.state} {listing.zip}
@@ -89,14 +95,17 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {profileId && <SaveHeartButton propertyId={property.id} />}
-              <a
-                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(listing.address ?? `${listing.city ?? property.county.name} TX`)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800"
-              >
-                View on map
-              </a>
+              {/* Only offered once the address is either resolved-and-unlocked or genuinely unresolved -- never for a real address hidden behind the paywall, where a "map" link would just be a confusing dead end. */}
+              {(listing.address || listing.addressPending) && (
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(listing.address ?? `${listing.city ?? property.county.name} TX`)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                >
+                  View on map
+                </a>
+              )}
             </div>
           </div>
 

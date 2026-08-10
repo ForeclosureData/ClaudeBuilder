@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Card } from "@/components/ui/card";
 import { PropertyMetric } from "@/components/investor/ui/property-metric";
 import { SaveHeartButton } from "@/components/investor/save-heart-button";
-import { formatEquity, formatMoney, formatShortDate, PROPERTY_TYPE_LABELS } from "@/lib/investor/format";
+import { addressDisplayText, formatEquity, formatMoney, formatShortDate, PROPERTY_TYPE_LABELS } from "@/lib/investor/format";
 import type { InvestorListing } from "@/lib/investor/types";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +26,14 @@ export function PropertyCard({
       <Link href={`/properties/${listing.id}`} className="block p-4 pr-14">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="truncate text-lg font-semibold text-neutral-900 dark:text-neutral-50">{listing.address ?? "Address not yet available"}</div>
+            <div
+              className={cn(
+                "truncate text-lg font-semibold",
+                listing.address ? "text-neutral-900 dark:text-neutral-50" : "italic text-neutral-400 dark:text-neutral-500",
+              )}
+            >
+              {addressDisplayText(listing)}
+            </div>
             <div className="text-sm text-neutral-500">
               {listing.city ?? listing.subdivision ?? "Hidalgo County"}, {listing.state} {listing.zip}
             </div>

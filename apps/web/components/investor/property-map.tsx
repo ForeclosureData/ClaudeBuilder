@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
-import { formatEquity, formatMoney, formatShortDate } from "@/lib/investor/format";
+import { addressDisplayText, formatEquity, formatMoney, formatShortDate } from "@/lib/investor/format";
 import type { InvestorListing } from "@/lib/investor/types";
 
 type LocatedListing = InvestorListing & { lat: number; lng: number };
@@ -106,7 +106,7 @@ export function PropertyMap({
           >
             ×
           </button>
-          <div className="pr-4 text-sm font-semibold text-neutral-900 dark:text-neutral-50">{selected.address ?? "Address not yet available"}</div>
+          <div className="pr-4 text-sm font-semibold text-neutral-900 dark:text-neutral-50">{addressDisplayText(selected)}</div>
           <div className="text-xs text-neutral-500">{selected.city}, {selected.state}</div>
           <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-xs">
             <span className="text-neutral-500">Sale</span>

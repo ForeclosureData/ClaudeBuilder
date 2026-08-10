@@ -1,5 +1,5 @@
 import { formatCurrencyCents } from "@/lib/utils";
-import type { InvestorPropertyType } from "./types";
+import type { InvestorListing, InvestorPropertyType } from "./types";
 
 export const PROPERTY_TYPE_LABELS: Record<InvestorPropertyType, string> = {
   SINGLE_FAMILY: "Single Family",
@@ -41,4 +41,18 @@ export function formatShortDate(iso: string | null): string {
 export function formatDaysUntil(iso: string | null, now: number = Date.now()): number | null {
   if (!iso) return null;
   return Math.ceil((new Date(iso).getTime() - now) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * The single place that turns `address`/`addressPending`/`unlocked` back
+ * into investor-facing copy. `address` reads null for two different
+ * reasons (see lib/investor/adapter.ts) -- this is what tells them apart:
+ * a real street address exists but is paywalled vs. one was never
+ * resolved at all. Never returns the raw address itself when locked (the
+ * adapter already nulled it before this ever runs).
+ */
+export function addressDisplayText(listing: Pick<InvestorListing, "address" | "addressPending" | "unlocked">): string {
+  if (listing.address) return listing.address;
+  if (!listing.unlocked && !listing.addressPending) return "Address available with paid plan";
+  return "Address not yet available";
 }
