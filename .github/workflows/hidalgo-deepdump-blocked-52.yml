@@ -1,0 +1,38 @@
+name: Hidalgo Deep Dump Blocked-52
+
+# Phase 1 support for the beta-readiness pass: full-text dump of the 52
+# still-blocked cases for human review. Read-only, zero writes, zero
+# Anthropic calls. See apps/web/scripts/ci-deepdump-blocked-52.mts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deepdump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run deep dump (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run deepdump:blocked-52:ci

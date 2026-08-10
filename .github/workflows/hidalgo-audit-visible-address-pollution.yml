@@ -1,0 +1,39 @@
+name: Hidalgo Visible-Listing Address Pollution Audit
+
+# Phase 2 of the beta-readiness pass: read-only audit of all currently
+# investor-visible listings for trustee/lender/courthouse/law-firm address
+# pollution. Zero writes, zero Anthropic calls. See
+# apps/web/scripts/ci-audit-visible-address-pollution.mts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run visible-listing address audit (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run audit:visible-address-pollution:ci
