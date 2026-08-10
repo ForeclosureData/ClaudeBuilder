@@ -44,14 +44,14 @@ export function BrowseView({
     <div className="container-page py-6 sm:py-8">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-neutral-900 sm:text-3xl">{summary.countyName} County Foreclosures</h1>
+          <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-50 sm:text-3xl">{summary.countyName} County Foreclosures</h1>
           <p className="mt-1 text-sm text-neutral-500">
             {summary.stateAbbr} &middot; Visible Opportunities: {summary.visibleOpportunities}
           </p>
         </div>
-        <div className="rounded-md bg-neutral-50 px-3 py-2 text-right">
+        <div className="rounded-md bg-neutral-50 px-3 py-2 text-right dark:bg-neutral-900">
           <div className="text-[11px] font-medium uppercase tracking-wide text-neutral-500">Next Foreclosure Sale</div>
-          <div className="text-sm font-semibold text-neutral-900">{formatShortDate(summary.nextAuctionISO)}</div>
+          <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">{formatShortDate(summary.nextAuctionISO)}</div>
         </div>
       </div>
 
@@ -62,7 +62,7 @@ export function BrowseView({
         <StatCard label="New This Week" value={summary.newThisWeek} />
       </div>
 
-      <div className="sticky top-16 z-20 mt-6 flex flex-col gap-3 border-b border-neutral-200 bg-white/95 py-4 backdrop-blur">
+      <div className="sticky top-16 z-20 mt-6 flex flex-col gap-3 border-b border-neutral-200 bg-white/95 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/95">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />

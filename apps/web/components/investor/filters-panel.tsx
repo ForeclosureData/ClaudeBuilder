@@ -77,30 +77,30 @@ export function FiltersPanel({
         </Select>
       </div>
 
-      <label className="flex items-end gap-2 pb-2.5 text-sm text-neutral-700">
+      <label className="flex items-end gap-2 pb-2.5 text-sm text-neutral-700 dark:text-neutral-300">
         <input
           type="checkbox"
-          className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500"
+          className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500 dark:border-neutral-600"
           checked={filters.hasCountyValue}
           onChange={(e) => set("hasCountyValue", e.target.checked)}
         />
         Has county value
       </label>
 
-      <label className="flex items-end gap-2 pb-2.5 text-sm text-neutral-700">
+      <label className="flex items-end gap-2 pb-2.5 text-sm text-neutral-700 dark:text-neutral-300">
         <input
           type="checkbox"
-          className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500"
+          className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500 dark:border-neutral-600"
           checked={filters.hasStreetAddress}
           onChange={(e) => set("hasStreetAddress", e.target.checked)}
         />
         Has street address
       </label>
 
-      <label className="flex items-end gap-2 pb-2.5 text-sm text-neutral-700">
+      <label className="flex items-end gap-2 pb-2.5 text-sm text-neutral-700 dark:text-neutral-300">
         <input
           type="checkbox"
-          className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500"
+          className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500 dark:border-neutral-600"
           checked={filters.newlyAdded}
           onChange={(e) => set("newlyAdded", e.target.checked)}
         />

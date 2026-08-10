@@ -59,8 +59,8 @@ export function PropertyMap({
   const selected = located.find((l) => l.id === selectedId) ?? null;
 
   return (
-    <div className={cn("relative overflow-hidden rounded-lg border border-neutral-200 bg-[#eef3f8]", className)}>
-      <svg className="absolute inset-0 h-full w-full opacity-40" aria-hidden="true">
+    <div className={cn("relative overflow-hidden rounded-lg border border-neutral-200 bg-[#eef3f8] dark:border-neutral-800 dark:bg-neutral-900", className)}>
+      <svg className="absolute inset-0 h-full w-full opacity-40 dark:opacity-20" aria-hidden="true">
         {[15, 30, 45, 60, 75, 90].map((pct) => (
           <line key={`h-${pct}`} x1="0%" y1={`${pct}%`} x2="100%" y2={`${pct}%`} stroke="#c3d3e5" strokeWidth={1} />
         ))}
@@ -91,7 +91,7 @@ export function PropertyMap({
 
       {selected && (
         <div
-          className="absolute z-20 w-56 -translate-x-1/2 rounded-lg border border-neutral-200 bg-white p-3 shadow-lg"
+          className="absolute z-20 w-56 -translate-x-1/2 rounded-lg border border-neutral-200 bg-white p-3 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
           style={{
             left: `${project(selected.lat, selected.lng).x}%`,
             top: `calc(${project(selected.lat, selected.lng).y}% - 12px)`,
@@ -101,20 +101,20 @@ export function PropertyMap({
           <button
             type="button"
             aria-label="Close"
-            className="absolute right-2 top-2 text-neutral-400 hover:text-neutral-600"
+            className="absolute right-2 top-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
             onClick={() => setSelectedId(null)}
           >
             ×
           </button>
-          <div className="pr-4 text-sm font-semibold text-neutral-900">{selected.address ?? "Address not yet available"}</div>
+          <div className="pr-4 text-sm font-semibold text-neutral-900 dark:text-neutral-50">{selected.address ?? "Address not yet available"}</div>
           <div className="text-xs text-neutral-500">{selected.city}, {selected.state}</div>
           <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-xs">
             <span className="text-neutral-500">Sale</span>
-            <span className="text-right font-medium text-neutral-900">{formatShortDate(selected.saleDateISO)}</span>
+            <span className="text-right font-medium text-neutral-900 dark:text-neutral-50">{formatShortDate(selected.saleDateISO)}</span>
             <span className="text-neutral-500">County Value</span>
-            <span className="text-right font-medium text-neutral-900">{formatMoney(selected.countyMarketValueCents ?? selected.countyAppraisedValueCents)}</span>
+            <span className="text-right font-medium text-neutral-900 dark:text-neutral-50">{formatMoney(selected.countyMarketValueCents ?? selected.countyAppraisedValueCents)}</span>
             <span className="text-neutral-500">Est. Equity</span>
-            <span className="text-right font-medium text-neutral-900">{formatEquity(selected.estimatedEquityCents)}</span>
+            <span className="text-right font-medium text-neutral-900 dark:text-neutral-50">{formatEquity(selected.estimatedEquityCents)}</span>
           </div>
           <Link href={`/properties/${selected.id}`} className="mt-2 block text-center text-xs font-medium text-brand-700 hover:underline">
             View Property →
@@ -123,7 +123,7 @@ export function PropertyMap({
       )}
 
       {listings.length > 0 && located.length < listings.length && (
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-white/95 px-3 py-1 text-xs text-neutral-500 shadow">
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-white/95 px-3 py-1 text-xs text-neutral-500 shadow dark:bg-neutral-900/95">
           {located.length} of {listings.length} results have a mapped address
         </div>
       )}

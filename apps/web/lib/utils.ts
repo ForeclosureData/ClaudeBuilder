@@ -10,9 +10,16 @@ export function formatCurrencyCents(cents: number | null | undefined): string {
   return `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 }
 
+/**
+ * Dates like sale/filing/recording dates are stored as a calendar date
+ * (midnight UTC, no real time-of-day meaning). Formatting in the viewer's
+ * local timezone would silently roll the date back a day for anyone west
+ * of UTC -- `timeZone: "UTC"` keeps the displayed date exactly what's
+ * stored, regardless of the viewer's location.
+ */
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "Unknown";
-  return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
 }
 
 export function daysUntil(iso: string | null | undefined): number | null {

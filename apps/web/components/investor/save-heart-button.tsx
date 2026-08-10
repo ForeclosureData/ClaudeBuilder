@@ -19,7 +19,7 @@ export function SaveHeartButton({ propertyId, className }: { propertyId: string;
         toggleSaved(propertyId);
       }}
       className={cn(
-        "flex h-9 w-9 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-400 transition-colors hover:border-danger-200 hover:text-danger-500",
+        "flex h-9 w-9 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-400 transition-colors hover:border-danger-200 hover:text-danger-500 dark:border-neutral-700 dark:bg-neutral-900",
         saved && "border-danger-200 text-danger-500",
         className,
       )}

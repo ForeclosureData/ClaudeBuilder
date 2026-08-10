@@ -25,9 +25,17 @@ export function formatMoney(cents: number | null): string {
   return formatCurrencyCents(cents);
 }
 
+/**
+ * Sale dates are stored as a calendar date (midnight UTC, no real time-of-
+ * day meaning -- see ForeclosureSale.saleDate). Formatting with the
+ * viewer's local timezone would silently roll the date back a day for
+ * anyone west of UTC (a Sept 1 sale would read "Aug 31" in US Central) --
+ * `timeZone: "UTC"` keeps the displayed date exactly what's stored,
+ * regardless of the viewer's location.
+ */
 export function formatShortDate(iso: string | null): string {
   if (!iso) return "Sale date unavailable";
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 }
 
 export function formatDaysUntil(iso: string | null, now: number = Date.now()): number | null {
