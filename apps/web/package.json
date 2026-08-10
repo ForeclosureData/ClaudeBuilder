@@ -15,6 +15,7 @@
     "reconcile:hidalgo-legacy:ci": "tsx scripts/ci-reconcile-legacy.mts",
     "cleanup:hidalgo-legacy:ci": "tsx scripts/ci-cleanup-legacy-duplicates.mts",
     "verify:hidalgo-legacy-cleanup:ci": "tsx scripts/ci-verify-legacy-cleanup.mts",
+    "freeze:blocked-55:ci": "tsx scripts/ci-freeze-blocked-55.mts",
     "report:publication-status:ci": "tsx scripts/ci-report-publication-status.mts",
     "triage:review-backlog:ci": "tsx scripts/ci-triage-review-backlog.mts",
     "reconcile:inventory-vs-backlog:ci": "tsx scripts/ci-reconcile-inventory-vs-backlog.mts",

@@ -1,0 +1,39 @@
+name: Hidalgo Freeze Blocked-55 Case Set
+
+# Phase 1 of the 55-case publication-blocker triage: read-only dump of every
+# currently non-public automated-ingestion case with the full evidence set
+# needed for human classification. Zero database writes, zero Anthropic
+# calls. See apps/web/scripts/ci-freeze-blocked-55.mts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Freeze blocked-55 case set (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: pnpm --filter @foreclosuredata/web run freeze:blocked-55:ci
