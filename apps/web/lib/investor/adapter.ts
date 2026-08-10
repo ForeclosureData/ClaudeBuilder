@@ -128,22 +128,28 @@ export function toInvestorListing(fc: InvestorAdapterCase, unlocked: boolean): I
     id: property?.id ?? fc.id,
     caseNumber: fc.caseNumber,
 
-    // Street address and exact coordinates are entitlement-gated like
-    // borrower/lender/original-loan below -- null (not just visually
-    // hidden) when locked, so the real address never reaches a free/
-    // signed-out visitor's browser. `addressPending` is computed
-    // independently above from the publication status alone, so it still
-    // correctly distinguishes "genuinely unresolved" from "resolved but
-    // paywalled" even though `address` reads null in both cases here --
-    // see addressDisplayText() in lib/investor/format.ts, the single place
+    // Street address text is entitlement-gated like borrower/lender/
+    // original-loan below -- null (not just visually hidden) when locked,
+    // so the real address string never reaches a free/signed-out
+    // visitor's browser. `addressPending` is computed independently above
+    // from the publication status alone, so it still correctly
+    // distinguishes "genuinely unresolved" from "resolved but paywalled"
+    // even though `address` reads null in both cases here -- see
+    // addressDisplayText() in lib/investor/format.ts, the single place
     // that turns those two flags back into investor-facing copy.
+    //
+    // lat/lng are NOT gated the same way -- a map with no pins for anyone
+    // who hasn't paid isn't a usable map (see docs/PRODUCT_UX_ROADMAP.md's
+    // map section: pins are core browsing, not a paywalled detail). The
+    // popup that opens on a pin still goes through addressDisplayText(),
+    // so a locked pin shows on the map but never reveals the street text.
     address: unlocked ? property?.propertyStreetAddress ?? null : null,
     addressPending: publication.addressPending,
     city: property?.city ?? null,
     state: property?.state ?? "TX",
     zip: property?.zipCode ?? null,
-    lat: unlocked ? property?.latitude ?? null : null,
-    lng: unlocked ? property?.longitude ?? null : null,
+    lat: property?.latitude ?? null,
+    lng: property?.longitude ?? null,
 
     saleDateISO: sale?.saleDate ? sale.saleDate.toISOString() : null,
     filedDateISO: fc.createdAt.toISOString(),

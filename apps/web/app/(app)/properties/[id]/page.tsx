@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { prisma } from "@foreclosuredata/database";
+import { prisma, Prisma } from "@foreclosuredata/database";
 import { resolveEntitlement } from "@foreclosuredata/auth/entitlement";
 import { hasFullAccessToCounty } from "@foreclosuredata/types";
 import { getCurrentProfileId } from "@/lib/supabase/server";
@@ -22,57 +22,84 @@ import { formatDate } from "@/lib/utils";
 const EQUITY_DISCLOSURE =
   "Estimated equity is calculated using available public-record values and estimated loan information. It is not a verified payoff, appraisal, or guarantee of equity.";
 
+const CASE_INCLUDE = {
+  ...PUBLICATION_EXTRA_INCLUDE,
+  county: true,
+  legalDescriptions: true,
+  sales: { orderBy: { saleDate: "asc" as const }, include: { trustee: { include: { person: true, organization: true } } } },
+  loan: { include: { currentMortgagee: true, originalLender: true, mortgageServicer: true } },
+  borrower: true,
+  currentOwner: true,
+  documents: { orderBy: { dateCollected: "desc" as const } },
+} satisfies Prisma.ForeclosureCaseInclude;
+
+const PROPERTY_APPRAISAL_INCLUDE = {
+  appraisalValueHistory: { orderBy: { taxYear: "desc" as const }, take: 1 },
+} satisfies Prisma.PropertyInclude;
+
+type CaseWithIncludes = Prisma.ForeclosureCaseGetPayload<{ include: typeof CASE_INCLUDE }>;
+type PropertyWithHistory = Prisma.PropertyGetPayload<{ include: typeof PROPERTY_APPRAISAL_INCLUDE }>;
+
 export default async function PropertyDetailPage({ params }: { params: { id: string } }) {
   const profileId = await getCurrentProfileId();
   const entitlement = await resolveEntitlement(profileId);
 
-  const property = await prisma.property.findUnique({
+  const propertyRow = await prisma.property.findUnique({
     where: { id: params.id },
     include: {
-      county: true,
-      appraisalValueHistory: { orderBy: { taxYear: "desc" }, take: 1 },
-      foreclosureCases: {
-        where: { archivedAt: null },
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        include: {
-          ...PUBLICATION_EXTRA_INCLUDE,
-          county: true,
-          legalDescriptions: true,
-          sales: { orderBy: { saleDate: "asc" }, include: { trustee: { include: { person: true, organization: true } } } },
-          loan: { include: { currentMortgagee: true, originalLender: true, mortgageServicer: true } },
-          borrower: true,
-          currentOwner: true,
-          documents: { orderBy: { dateCollected: "desc" } },
-        },
-      },
+      ...PROPERTY_APPRAISAL_INCLUDE,
+      foreclosureCases: { where: { archivedAt: null }, orderBy: { createdAt: "desc" }, take: 1, include: CASE_INCLUDE },
     },
   });
 
-  if (!property) notFound();
+  let fc: CaseWithIncludes;
+  let property: PropertyWithHistory | null;
 
-  const fc = property.foreclosureCases[0];
-  if (!fc) notFound();
-  // A property whose only (or most recent) non-archived case isn't
-  // publicly visible (pending an identity/conflict review, or missing a
-  // valid source notice) must 404 for a public visitor exactly like a
+  if (propertyRow) {
+    const firstCase = propertyRow.foreclosureCases[0];
+    if (!firstCase) notFound();
+    fc = firstCase;
+    property = propertyRow;
+  } else {
+    // No Property row matched params.id -- it may instead be a
+    // ForeclosureCase id. A published case can have no resolved Property
+    // row at all (address-pending, published on legal-description
+    // evidence alone -- see hasCoreIdentifier in publicationStatus.ts),
+    // and lib/investor/adapter.ts routes those by the case's own id
+    // (`id: property?.id ?? fc.id`). Without this fallback, every card
+    // for such a case 404s.
+    const caseRow = await prisma.foreclosureCase.findUnique({
+      where: { id: params.id },
+      include: { ...CASE_INCLUDE, property: { include: PROPERTY_APPRAISAL_INCLUDE } },
+    });
+    if (!caseRow || caseRow.archivedAt !== null) notFound();
+    fc = caseRow;
+    property = caseRow.property;
+  }
+
+  const county = fc.county;
+
+  // A case whose only (or most recent) non-archived case isn't publicly
+  // visible (pending an identity/conflict review, or missing a valid
+  // source notice) must 404 for a public visitor exactly like a
   // nonexistent property would -- never render partial/unsafe detail.
   if (!isPubliclyVisible({ ...fc, property })) notFound();
 
-  const unlocked = hasFullAccessToCounty(entitlement, property.county.slug);
-  const listing = toInvestorListing({ ...fc, property: { ...property, appraisalValueHistory: property.appraisalValueHistory } }, unlocked);
+  const unlocked = hasFullAccessToCounty(entitlement, county.slug);
+  const listing = toInvestorListing({ ...fc, property }, unlocked);
   const evidence = await loadFieldEvidence(fc.id);
 
-  const isSaved = profileId
-    ? Boolean(await prisma.savedProperty.findUnique({ where: { profileId_propertyId: { profileId, propertyId: property.id } } }))
-    : false;
+  const isSaved =
+    profileId && property
+      ? Boolean(await prisma.savedProperty.findUnique({ where: { profileId_propertyId: { profileId, propertyId: property.id } } }))
+      : false;
 
   const daysUntilSale = formatDaysUntil(listing.saleDateISO);
   const latestDocument = fc.documents[0] ?? null;
   const canViewSource = unlocked && entitlement.canViewDocuments;
 
   return (
-    <SavedPropertiesProvider isAuthenticated={Boolean(profileId)} initialSavedIds={isSaved ? [property.id] : []}>
+    <SavedPropertiesProvider isAuthenticated={Boolean(profileId)} initialSavedIds={isSaved && property ? [property.id] : []}>
       <div className="max-w-5xl">
         {/* Investment Snapshot */}
         <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900 sm:p-6">
@@ -88,18 +115,18 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
                 {addressDisplayText(listing)}
               </h1>
               <p className="mt-1 text-neutral-500">
-                {listing.city ?? listing.subdivision ?? property.county.name}, {listing.state} {listing.zip}
+                {listing.city ?? listing.subdivision ?? county.name}, {listing.state} {listing.zip}
               </p>
               <div className="mt-3">
                 <StatusBadge dataState={listing.dataState} />
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {profileId && <SaveHeartButton propertyId={property.id} />}
+              {profileId && property && <SaveHeartButton propertyId={property.id} />}
               {/* Only offered once the address is either resolved-and-unlocked or genuinely unresolved -- never for a real address hidden behind the paywall, where a "map" link would just be a confusing dead end. */}
               {(listing.address || listing.addressPending) && (
                 <a
-                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(listing.address ?? `${listing.city ?? property.county.name} TX`)}`}
+                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(listing.address ?? `${listing.city ?? county.name} TX`)}`}
                   target="_blank"
                   rel="noreferrer"
                   className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800"
@@ -133,7 +160,7 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
               <p className="text-sm font-medium text-neutral-900 dark:text-neutral-50">
                 Unlock the address, owner, and original loan amount for this property.
               </p>
-              <Link href={`/sign-up?trialCounty=${property.county.slug}`}>
+              <Link href={`/sign-up?trialCounty=${county.slug}`}>
                 <Button size="sm">Start free trial</Button>
               </Link>
             </div>
@@ -233,7 +260,7 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
           <div className="space-y-6">
             <SourceCredibilityCard
               listing={listing}
-              countyName={property.county.name}
+              countyName={county.name}
               sourceUrl={latestDocument?.documentUrl ?? null}
               canViewSource={canViewSource}
             />
@@ -242,7 +269,7 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
               <CardContent className="space-y-2 text-sm text-neutral-600 dark:text-neutral-300">
                 <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">Verification</h2>
                 <p>Last verified: {formatDate(fc.lastVerifiedAt?.toISOString() ?? null)}</p>
-                <CorrectionReportForm propertyId={property.id} foreclosureCaseId={fc.id} />
+                <CorrectionReportForm propertyId={property?.id} foreclosureCaseId={fc.id} />
               </CardContent>
             </Card>
           </div>
