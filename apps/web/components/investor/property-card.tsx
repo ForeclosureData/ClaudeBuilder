@@ -39,9 +39,9 @@ export function PropertyCard({
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <PropertyMetric label="County Value" value={formatMoney(countyValueCents)} />
-          <PropertyMetric label="Original Loan" value={listing.unlocked ? formatMoney(listing.originalLoanCents) : "Upgrade to view"} />
+          <PropertyMetric label="Original Loan" value={formatMoney(listing.originalLoanCents)} locked={!listing.unlocked} />
           <PropertyMetric label="Est. Equity" value={formatEquity(listing.estimatedEquityCents)} emphasis />
-          <PropertyMetric label="Owner" value={listing.borrowerName} />
+          <PropertyMetric label="Owner" value={listing.borrowerName} locked={!listing.unlocked} />
         </div>
 
         <div className="mt-4 flex items-center justify-between border-t border-neutral-100 pt-3">

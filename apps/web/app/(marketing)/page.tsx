@@ -3,6 +3,7 @@ import { ShieldCheck, Landmark, FileCheck2, RadarIcon } from "lucide-react";
 import { prisma } from "@foreclosuredata/database";
 import { Button } from "@/components/ui/button";
 import { CountySearch } from "@/components/search/county-search";
+import { WorkflowSteps } from "@/components/marketing/workflow-steps";
 import { getPublicForeclosureCases } from "@/lib/properties";
 
 const TRUST_ITEMS = [
@@ -51,6 +52,20 @@ export default async function LandingPage() {
           </div>
 
           <p className="mt-2 text-xs uppercase tracking-wide text-neutral-400">No account needed to browse</p>
+
+          <Link href="#how-it-works" className="text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+            See How It Works
+          </Link>
+        </div>
+      </section>
+
+      <section id="how-it-works" className="border-b border-neutral-200 py-16 dark:border-neutral-800">
+        <div className="container-page">
+          <div className="mx-auto mb-10 max-w-xl text-center">
+            <h2 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-50">From county PDF to searchable listing</h2>
+            <p className="mt-2 text-sm text-neutral-500">Four steps, no manual reading required.</p>
+          </div>
+          <WorkflowSteps />
         </div>
       </section>
 

@@ -92,7 +92,7 @@ function toInvestorPropertyType(propertyType: string): InvestorPropertyType {
   return (known as string[]).includes(propertyType) ? (propertyType as InvestorPropertyType) : "UNKNOWN";
 }
 
-function trusteeNameFromSale(sale: InvestorAdapterCase["sales"][number] | undefined): string | null {
+function trusteeNameFromSale(sale: InvestorAdapterCase["sales"][number] | null | undefined): string | null {
   const trustee = sale?.trustee;
   if (!trustee) return null;
   return trustee.organization?.name ?? trustee.person?.fullName ?? null;
@@ -100,17 +100,21 @@ function trusteeNameFromSale(sale: InvestorAdapterCase["sales"][number] | undefi
 
 /**
  * Maps one real, publication-gated ForeclosureCase to the flat investor UI
- * shape. `unlocked` mirrors hasFullAccessToCounty() -- when false, borrower
- * name reads "Upgrade to view" and lender/original-loan fields are nulled
- * out (the card/detail components render the paywall treatment from
- * `listing.unlocked`, never by string-matching the value). Never invents an
- * address, borrower, or value -- every field is either a real column or
- * null.
+ * shape. `unlocked` mirrors hasFullAccessToCounty() -- lender/original-loan
+ * are nulled out when locked, but `borrowerName` is always the real value:
+ * display components decide whether to render it or a blurred placeholder
+ * from `listing.unlocked` (see PropertyMetric's `locked` prop), never by
+ * string-matching the value itself. Never invents an address, borrower, or
+ * value -- every field is either a real column or null.
  */
 export function toInvestorListing(fc: InvestorAdapterCase, unlocked: boolean): InvestorListing {
   const publication = getPublicationStatus(fc);
   const property = fc.property;
-  const sale = fc.sales.find((s) => s.saleDate !== null) ?? fc.sales[0];
+  // Sales are fetched ordered ascending by saleDate (see foreclosureCaseListInclude()).
+  // A case with postponements has MULTIPLE ForeclosureSale rows over time -- the last
+  // one in ascending order is the current/most-recent sale date, never the first
+  // (which for a postponed case would be the stale, superseded original date).
+  const sale = fc.sales[fc.sales.length - 1] ?? null;
   const latestAppraisal = property?.appraisalValueHistory?.[0] ?? null;
 
   const countyMarketValueCents = property?.estimatedMarketValueCents ?? null;
@@ -143,7 +147,12 @@ export function toInvestorListing(fc: InvestorAdapterCase, unlocked: boolean): I
     parcelId: property?.propertyIdNumber ?? null,
     geoId: property?.geographicId ?? null,
 
-    borrowerName: unlocked ? formatBorrowerName(fc.borrower?.fullName) : "Upgrade to view",
+    // Always the real value regardless of lock state -- `unlocked` on the
+    // returned listing is what tells display components whether to render
+    // it or a blurred placeholder (see components/investor/ui/property-metric.tsx),
+    // so the data layer never bakes UI copy like "Upgrade to view" into a
+    // field meant to hold a name.
+    borrowerName: formatBorrowerName(fc.borrower?.fullName),
     lenderName: unlocked ? fc.loan?.currentMortgagee?.name ?? fc.loan?.originalLender?.name ?? null : null,
     mortgageServicer: fc.loan?.mortgageServicer?.name ?? null,
     trusteeName: trusteeNameFromSale(sale),

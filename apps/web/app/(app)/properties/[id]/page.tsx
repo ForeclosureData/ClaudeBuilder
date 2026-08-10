@@ -103,8 +103,8 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
           <div className="mt-6 grid grid-cols-2 gap-x-4 gap-y-5 sm:grid-cols-4">
             <PropertyMetric label="Sale Date" value={formatShortDate(listing.saleDateISO)} emphasis />
             <PropertyMetric label="Days Until Sale" value={daysUntilSale !== null ? (daysUntilSale >= 0 ? `${daysUntilSale} days` : "Past") : "Unavailable"} emphasis />
-            <PropertyMetric label="Owner" value={listing.borrowerName} emphasis />
-            <PropertyMetric label="Original Loan" value={listing.unlocked ? formatMoney(listing.originalLoanCents) : "Upgrade to view"} emphasis />
+            <PropertyMetric label="Owner" value={listing.borrowerName} locked={!listing.unlocked} emphasis />
+            <PropertyMetric label="Original Loan" value={formatMoney(listing.originalLoanCents)} locked={!listing.unlocked} emphasis />
             <PropertyMetric label="County Market Value" value={formatMoney(listing.countyMarketValueCents)} emphasis />
             <PropertyMetric label="County Appraised Value" value={formatMoney(listing.countyAppraisedValueCents)} emphasis />
             <PropertyMetric label="Estimated Equity" value={formatEquity(listing.estimatedEquityCents)} emphasis />
@@ -143,11 +143,11 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
               <CardContent className="space-y-4">
                 <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">Foreclosure Details</h2>
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-3">
-                  <PropertyMetric label="Borrower" value={listing.borrowerName} />
-                  <PropertyMetric label="Lender / Beneficiary" value={listing.unlocked ? listing.lenderName ?? "Lender unavailable" : "Upgrade to view"} />
+                  <PropertyMetric label="Borrower" value={listing.borrowerName} locked={!listing.unlocked} />
+                  <PropertyMetric label="Lender / Beneficiary" value={listing.lenderName ?? "Lender unavailable"} locked={!listing.unlocked} />
                   <PropertyMetric label="Mortgage Servicer" value={listing.mortgageServicer ?? "Unavailable"} />
                   <PropertyMetric label="Trustee" value={listing.trusteeName ?? "Unavailable"} />
-                  <PropertyMetric label="Original Principal" value={listing.unlocked ? formatMoney(listing.originalLoanCents) : "Upgrade to view"} />
+                  <PropertyMetric label="Original Principal" value={formatMoney(listing.originalLoanCents)} locked={!listing.unlocked} />
                   <PropertyMetric label="Recording / Document #" value={listing.instrumentNumber ?? "Unavailable"} />
                 </dl>
                 <div>
