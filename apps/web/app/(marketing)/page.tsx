@@ -99,9 +99,16 @@ export default async function LandingPage() {
           <p className="max-w-md text-sm text-brand-100">
             Browse active foreclosures with property addresses, sale dates, county values, and estimated equity.
           </p>
-          <Link href="/county/hidalgo-tx">
-            <Button size="lg" variant="secondary">Browse Foreclosures</Button>
-          </Link>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/county/hidalgo-tx">
+              <Button size="lg" variant="secondary">Browse Foreclosures</Button>
+            </Link>
+            <Link href="/sign-up?trialCounty=hidalgo-tx">
+              <Button size="lg" variant="outline" className="border-white text-white hover:bg-white/10">
+                Start Free Trial
+              </Button>
+            </Link>
+          </div>
         </div>
       </section>
     </div>

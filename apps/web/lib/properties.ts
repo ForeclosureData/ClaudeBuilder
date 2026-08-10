@@ -141,7 +141,21 @@ export function foreclosureCaseListInclude() {
 export async function getPublicForeclosureCases(filters: ForeclosureListFilters, pagination?: { skip?: number; take?: number }) {
   const where = buildForeclosureCaseWhere(filters);
   const all = await prisma.foreclosureCase.findMany({ where, include: foreclosureCaseListInclude(), orderBy: { sales: { _count: "desc" } } });
-  const visible = filterPublic(all);
+  // A case's sale can be postponed (multiple ForeclosureSale rows over
+  // time, fetched ascending -- see foreclosureCaseListInclude()); the
+  // LAST row is always the current/most-recent date. Nothing in this app
+  // automatically flips status once that date passes (scheduling is
+  // intentionally off), so an already-completed sale must be excluded
+  // here by date, not by trusting `status` to have been updated.
+  // Compared at UTC midnight since sale dates are stored as a calendar
+  // date, not a real moment in time (see formatShortDate's own comment).
+  const todayUtcMidnight = new Date();
+  todayUtcMidnight.setUTCHours(0, 0, 0, 0);
+  const upcoming = all.filter((fc) => {
+    const currentSale = fc.sales[fc.sales.length - 1];
+    return !currentSale?.saleDate || currentSale.saleDate >= todayUtcMidnight;
+  });
+  const visible = filterPublic(upcoming);
   const totalCount = visible.length;
   const skip = pagination?.skip ?? 0;
   const take = pagination?.take;

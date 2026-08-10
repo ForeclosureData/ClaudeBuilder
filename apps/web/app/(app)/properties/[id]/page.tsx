@@ -9,6 +9,7 @@ import { PUBLICATION_EXTRA_INCLUDE, isPubliclyVisible } from "@/lib/publicationV
 import { toInvestorListing } from "@/lib/investor/adapter";
 import { addressDisplayText, formatDaysUntil, formatEquity, formatMoney, formatShortDate, PROPERTY_TYPE_LABELS } from "@/lib/investor/format";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { PropertyMetric } from "@/components/investor/ui/property-metric";
 import { StatusBadge } from "@/components/investor/ui/status-badges";
 import { SaveHeartButton } from "@/components/investor/save-heart-button";
@@ -125,6 +126,17 @@ export default async function PropertyDetailPage({ params }: { params: { id: str
               Based on {listing.equitySourceLabel}: {formatMoney(listing.equityBaseCents)} minus estimated remaining loan balance:{" "}
               {formatMoney(listing.equityLoanBalanceCents)}. {EQUITY_DISCLOSURE}
             </p>
+          )}
+
+          {!listing.unlocked && (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 dark:border-brand-900 dark:bg-brand-500/10">
+              <p className="text-sm font-medium text-neutral-900 dark:text-neutral-50">
+                Unlock the address, owner, and original loan amount for this property.
+              </p>
+              <Link href={`/sign-up?trialCounty=${property.county.slug}`}>
+                <Button size="sm">Start free trial</Button>
+              </Link>
+            </div>
           )}
         </div>
 

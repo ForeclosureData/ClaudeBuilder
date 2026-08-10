@@ -26,10 +26,13 @@ export function BrowseView({
   listings,
   summary,
   initialView = "list",
+  ctaBanner,
 }: {
   listings: InvestorListing[];
   summary: InvestorCountySummary;
   initialView?: ViewMode;
+  /** Rendered directly under the stat cards, above the fold -- e.g. the "start free trial" upsell for locked visitors. Optional so an unlocked (paying) visitor's browse page doesn't reserve space for it. */
+  ctaBanner?: React.ReactNode;
 }) {
   const [filters, setFilters] = useState<InvestorFilterState>(DEFAULT_INVESTOR_FILTERS);
   const [view, setView] = useState<ViewMode>(initialView);
@@ -61,6 +64,8 @@ export function BrowseView({
         <StatCard label="With County Value" value={summary.withCountyValue} />
         <StatCard label="New This Week" value={summary.newThisWeek} />
       </div>
+
+      {ctaBanner && <div className="mt-6">{ctaBanner}</div>}
 
       <div className="sticky top-16 z-20 mt-6 flex flex-col gap-3 border-b border-neutral-200 bg-white/95 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/95">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

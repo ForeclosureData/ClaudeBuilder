@@ -83,24 +83,43 @@ export default async function CountyPage({ params, searchParams }: { params: { s
     ? (await prisma.savedProperty.findMany({ where: { profileId, propertyId: { in: listings.map((l) => l.id) } }, select: { propertyId: true } })).map((s) => s.propertyId)
     : [];
 
+  const ctaCopy =
+    summary.visibleOpportunities > listings.length
+      ? `Unlock all ${summary.visibleOpportunities} foreclosures in ${county.name} County.`
+      : `Unlock full details for every foreclosure in ${county.name} County.`;
+
   return (
     <SavedPropertiesProvider isAuthenticated={Boolean(profileId)} initialSavedIds={savedIds}>
-      <BrowseView listings={listings} summary={summary} initialView={searchParams.view === "map" ? "map" : "list"} />
+      <BrowseView
+        listings={listings}
+        summary={summary}
+        initialView={searchParams.view === "map" ? "map" : "list"}
+        ctaBanner={
+          !unlocked ? (
+            <Card className="border-brand-200 bg-brand-50 dark:border-brand-900 dark:bg-brand-500/10">
+              <CardContent className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="font-semibold text-neutral-900 dark:text-neutral-50">{ctaCopy}</p>
+                  <p className="text-sm text-neutral-600 dark:text-neutral-300">$7/month &middot; Free 7-day trial &middot; Cancel anytime</p>
+                </div>
+                <Link href={`/sign-up?trialCounty=${county.slug}`}>
+                  <Button size="lg">Start free trial</Button>
+                </Link>
+              </CardContent>
+            </Card>
+          ) : undefined
+        }
+      />
 
       {!unlocked && (
         <div className="container-page pb-10">
-          <Card className="border-brand-200 bg-brand-50 dark:border-brand-900 dark:bg-brand-500/10">
+          <Card className="border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900">
             <CardContent className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <p className="font-semibold text-neutral-900 dark:text-neutral-50">
-                  {summary.visibleOpportunities > listings.length
-                    ? `Unlock all ${summary.visibleOpportunities} foreclosures in ${county.name} County.`
-                    : `Unlock full details for every foreclosure in ${county.name} County.`}
-                </p>
-                <p className="text-sm text-neutral-600 dark:text-neutral-300">$7/month &middot; Free 7-day trial &middot; Cancel anytime</p>
-              </div>
+              <p className="text-sm text-neutral-600 dark:text-neutral-300">
+                Ready to see every foreclosure and every locked field in {county.name} County?
+              </p>
               <Link href={`/sign-up?trialCounty=${county.slug}`}>
-                <Button size="lg">Start free trial</Button>
+                <Button variant="outline">Start free trial</Button>
               </Link>
             </CardContent>
           </Card>

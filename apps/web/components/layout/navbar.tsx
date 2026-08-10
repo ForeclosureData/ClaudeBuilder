@@ -21,9 +21,14 @@ export function Navbar({ isAuthenticated }: { isAuthenticated: boolean }) {
               <Button size="sm">Account</Button>
             </Link>
           ) : (
-            <Link href="/sign-in">
-              <Button variant="ghost" size="sm">Sign In</Button>
-            </Link>
+            <>
+              <Link href="/sign-in" className="hidden sm:block">
+                <Button variant="ghost" size="sm">Sign In</Button>
+              </Link>
+              <Link href="/sign-up">
+                <Button size="sm">Start Free Trial</Button>
+              </Link>
+            </>
           )}
         </div>
       </div>
