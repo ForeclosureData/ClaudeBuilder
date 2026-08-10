@@ -104,7 +104,7 @@ export default async function PropertiesPage({ searchParams }: { searchParams: R
                   </Td>
                   <Td>{fc.property?.propertyType ?? "UNKNOWN"}</Td>
                   <Td>{unlocked ? formatBorrowerName(fc.borrower?.fullName) : <LockedCell />}</Td>
-                  <Td>{unlocked ? fc.loan?.currentMortgagee?.name ?? fc.loan?.originalLender?.name ?? "Unknown" : <LockedCell />}</Td>
+                  <Td>{unlocked ? fc.loan?.currentMortgagee?.name ?? fc.loan?.originalLender?.name ?? "Lender unavailable" : <LockedCell />}</Td>
                   <Td>{unlocked ? formatOriginalPrincipal(fc.loan?.originalPrincipalAmountCents ?? null) : <LockedCell />}</Td>
                   <Td><Badge tone={fc.status === "CANCELED" ? "danger" : fc.status === "SOLD" ? "neutral" : "success"}>{saleStatusLabels[fc.status]}</Badge></Td>
                   <Td><ConfidenceBadge confidence={fc.property?.addressResolutionConfidence ?? null} /></Td>

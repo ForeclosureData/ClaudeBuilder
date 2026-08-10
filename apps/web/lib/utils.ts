@@ -48,3 +48,9 @@ export function formatOriginalPrincipal(cents: number | null | undefined): strin
   if (cents === null || cents === undefined) return "Original loan amount unavailable";
   return formatCurrencyCents(cents);
 }
+
+/** Investor-facing wording for a missing county market/appraised value — never a bare "Unknown" or "$0". */
+export function formatCountyValue(cents: number | null | undefined): string {
+  if (cents === null || cents === undefined) return "County value unavailable";
+  return formatCurrencyCents(cents);
+}

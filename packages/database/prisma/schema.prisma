@@ -1352,6 +1352,15 @@ model ManualReviewTask {
   assignedToId     String?                @map("assigned_to_id")
   assignedTo       Profile?               @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
   notes            String?
+  /// Structured provenance for why this task was raised -- conflicting
+  /// field name, the notice's own value, the CAD/candidate value it
+  /// disagreed with, the candidate identifier, its match score, matched vs
+  /// conflicting field lists, and a source-text snippet, shaped as
+  /// ManualReviewTaskEvidence (@foreclosuredata/types). Populated only for
+  /// tasks created going forward (see ingestForeclosureNotices.ts /
+  /// pipeline.ts) -- never backfilled onto pre-existing rows, which stay
+  /// null here exactly as they always were.
+  evidence         Json?
   createdAt        DateTime               @default(now()) @map("created_at")
   resolvedAt       DateTime?              @map("resolved_at")
 

@@ -27,7 +27,7 @@ import {
   type ResolutionInput,
   type RequestBudget,
 } from "@foreclosuredata/foreclosure-core";
-import type { AppraisalValueYear } from "@foreclosuredata/types";
+import type { AppraisalValueYear, ManualReviewTaskEvidence } from "@foreclosuredata/types";
 import { getCountyAppraisalAdapter } from "../appraisal";
 
 export interface NoticeReportEntry {
@@ -516,8 +516,23 @@ async function processSingleNotice(params: {
   }
 
   const manualReviewReasons = [...pipelineResult.manualReviewReasons];
-  if (!identityKey) manualReviewReasons.push("MISSING_FILING_NUMBER");
-  if (!property) manualReviewReasons.push("NO_ADDRESS_RESOLVED");
+  // Evidence for reasons added below (not already covered by
+  // pipelineResult.manualReviewEvidence) -- merged with the pipeline's own
+  // map so every reason in manualReviewReasons has a matching entry.
+  const manualReviewEvidence: Record<string, ManualReviewTaskEvidence> = { ...pipelineResult.manualReviewEvidence };
+  if (!identityKey) {
+    manualReviewReasons.push("MISSING_FILING_NUMBER");
+    manualReviewEvidence.MISSING_FILING_NUMBER = { reason: "MISSING_FILING_NUMBER", conflictingField: "countyFilingNumber", noticeValue: null };
+  }
+  if (!property) {
+    manualReviewReasons.push("NO_ADDRESS_RESOLVED");
+    manualReviewEvidence.NO_ADDRESS_RESOLVED = {
+      reason: "NO_ADDRESS_RESOLVED",
+      conflictingField: "propertyStreetAddress",
+      noticeValue: statedAddress?.text ?? null,
+      candidateId: null,
+    };
+  }
   // The address itself is fine (explicit-stated-address cases always are),
   // but the CAD returned candidates for this notice's legal description/
   // owner that couldn't be confidently attached as enrichment -- surface it
@@ -527,7 +542,20 @@ async function processSingleNotice(params: {
   // reviewer can tell "the county record points at a different owner"
   // apart from ordinary ambiguity.
   if (property && !selectedCandidate && resolution.candidates.length > 0) {
-    manualReviewReasons.push(resolution.ownerConflictOnBestMatch ? "CAD_OWNER_CONFLICT" : "MULTIPLE_APPRAISAL_MATCHES");
+    const reason = resolution.ownerConflictOnBestMatch ? "CAD_OWNER_CONFLICT" : "MULTIPLE_APPRAISAL_MATCHES";
+    manualReviewReasons.push(reason);
+    const topCandidate = resolution.candidates[0] ?? null;
+    manualReviewEvidence[reason] = {
+      reason,
+      conflictingField: "ownerName",
+      noticeValue: grantorName,
+      cadValue: topCandidate?.ownerName ?? null,
+      candidateId: topCandidate?.sourcePropertyId ?? null,
+      score: resolution.resolution.confidence,
+      matchedFields: resolution.resolution.matchedFields,
+      conflictingFields: resolution.resolution.conflictingFields,
+      sourceSnippet: resolution.resolution.explanation,
+    };
   }
 
   // extracted.*.value is expressed in whole dollars (see texasTemplates.ts,
@@ -772,6 +800,7 @@ async function processSingleNotice(params: {
         reason: reason as ManualReviewReason,
         status: ManualReviewTaskStatus.OPEN,
         notes: `Automatically flagged during live Hidalgo ingestion (Doc-${bundledNotice.countyFilingNumber ?? "unknown"}).`,
+        evidence: (manualReviewEvidence[reason] as unknown as Prisma.InputJsonValue) ?? Prisma.JsonNull,
       },
     });
   }

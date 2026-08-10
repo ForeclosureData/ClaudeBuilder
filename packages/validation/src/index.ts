@@ -23,6 +23,10 @@ export const propertyFilterSchema = z.object({
   minExtractionConfidence: z.number().min(0).max(1).optional(),
   manualReviewStatus: z.enum(["NOT_NEEDED", "PENDING", "IN_REVIEW", "RESOLVED"]).optional(),
   savedOnly: z.boolean().optional(),
+  subdivisionSearch: z.string().max(200).optional(),
+  hasCountyValue: z.boolean().optional(),
+  hasStreetAddress: z.boolean().optional(),
+  newlyAddedWithinDays: z.number().int().positive().optional(),
   page: z.number().int().min(1).default(1),
   pageSize: z.number().int().min(1).max(100).default(25),
 });

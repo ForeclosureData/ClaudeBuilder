@@ -1,4 +1,4 @@
-import type { ExtractedForeclosureNotice, ExtractedValue } from "@foreclosuredata/types";
+import type { ExtractedForeclosureNotice, ExtractedValue, ManualReviewTaskEvidence } from "@foreclosuredata/types";
 import { extractDeterministic, needsAiFallback } from "./deterministic/texasTemplates";
 import { extractWithAI, type AiFieldOutcome, type BudgetGuard } from "./ai/extractWithAI";
 
@@ -9,6 +9,8 @@ export interface ExtractionPipelineResult {
   overallConfidence: number;
   needsManualReview: boolean;
   manualReviewReasons: string[];
+  /** Structured evidence for each reason in manualReviewReasons, keyed by reason -- see ManualReviewTaskEvidence for what's captured. Only reasons this pipeline itself determines (not ones added later by the caller, e.g. CAD_OWNER_CONFLICT) have an entry here. */
+  manualReviewEvidence: Record<string, ManualReviewTaskEvidence>;
   /** Set when Layer 2 was attempted (spent budget) but produced zero usable fields -- visible in the run summary rather than silently discarded, since budget was still spent. */
   aiFailureReason?: string;
   /** Per-field validation outcome of the AI call, for cost/yield instrumentation. Empty when AI wasn't invoked. */
@@ -57,7 +59,7 @@ export async function runExtractionPipeline(
   }
 
   const overallConfidence = averageConfidence(merged);
-  const manualReviewReasons = determineManualReviewReasons(merged, noticeText);
+  const { reasons: manualReviewReasons, evidence: manualReviewEvidence } = determineManualReviewReasons(merged, noticeText, overallConfidence);
 
   return {
     extracted: merged,
@@ -66,6 +68,7 @@ export async function runExtractionPipeline(
     overallConfidence,
     needsManualReview: manualReviewReasons.length > 0,
     manualReviewReasons,
+    manualReviewEvidence,
     aiFailureReason,
     aiFieldOutcomes,
     aiInputTokens,
@@ -95,23 +98,34 @@ function averageConfidence(extracted: ExtractedForeclosureNotice): number {
   return withValue.reduce((sum, f) => sum + f.confidence, 0) / withValue.length;
 }
 
-function determineManualReviewReasons(extracted: ExtractedForeclosureNotice, noticeText: string): string[] {
+function determineManualReviewReasons(
+  extracted: ExtractedForeclosureNotice,
+  noticeText: string,
+  overallConfidence: number,
+): { reasons: string[]; evidence: Record<string, ManualReviewTaskEvidence> } {
   const reasons: string[] = [];
+  const evidence: Record<string, ManualReviewTaskEvidence> = {};
+
   if (extracted.propertyAddress.value === null && extracted.legalDescription.value === null) {
     reasons.push("NO_ADDRESS_RESOLVED");
+    evidence.NO_ADDRESS_RESOLVED = { reason: "NO_ADDRESS_RESOLVED", conflictingField: "propertyAddress", noticeValue: null };
   }
   if (extracted.borrowerNames.value === null) {
     reasons.push("BORROWER_NAME_CONFLICT");
+    evidence.BORROWER_NAME_CONFLICT = { reason: "BORROWER_NAME_CONFLICT", conflictingField: "borrowerNames", noticeValue: null };
   }
   if (extracted.saleDate.value === null) {
     reasons.push("SALE_DATE_CONFLICT");
+    evidence.SALE_DATE_CONFLICT = { reason: "SALE_DATE_CONFLICT", conflictingField: "saleDate", noticeValue: null };
   }
-  const ocrNoiseMarkers = (noticeText.match(/[0O]{1}[a-z]{2,}\d|illegible|approx, low OCR/gi) ?? []).length;
-  if (ocrNoiseMarkers >= 2) {
+  const ocrNoiseMatches = noticeText.match(/[0O]{1}[a-z]{2,}\d|illegible|approx, low OCR/gi) ?? [];
+  if (ocrNoiseMatches.length >= 2) {
     reasons.push("POOR_TEXT_QUALITY");
+    evidence.POOR_TEXT_QUALITY = { reason: "POOR_TEXT_QUALITY", sourceSnippet: ocrNoiseMatches.slice(0, 3).join(" … ") };
   }
-  if (averageConfidence(extracted) < 0.55) {
+  if (overallConfidence < 0.55) {
     reasons.push("LOW_CONFIDENCE");
+    evidence.LOW_CONFIDENCE = { reason: "LOW_CONFIDENCE", score: overallConfidence };
   }
-  return reasons;
+  return { reasons, evidence };
 }

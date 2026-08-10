@@ -10,17 +10,19 @@ export function Navbar({ isAuthenticated }: { isAuthenticated: boolean }) {
           ForeclosureData
         </Link>
         <nav className="hidden items-center gap-6 text-sm text-neutral-600 dark:text-neutral-300 sm:flex">
-          <Link href="/" className="hover:text-neutral-900 dark:hover:text-white">Search</Link>
+          <Link href="/county/hidalgo-tx" className="hover:text-neutral-900 dark:hover:text-white">Browse</Link>
+          <Link href="/county/hidalgo-tx?view=map" className="hover:text-neutral-900 dark:hover:text-white">Map</Link>
+          <Link href="/watchlist" className="hover:text-neutral-900 dark:hover:text-white">Saved</Link>
           <Link href="/pricing" className="hover:text-neutral-900 dark:hover:text-white">Pricing</Link>
         </nav>
         <div className="flex items-center gap-2">
           {isAuthenticated ? (
-            <Link href="/properties">
-              <Button size="sm">My counties</Button>
+            <Link href="/settings/billing">
+              <Button size="sm">Account</Button>
             </Link>
           ) : (
             <Link href="/sign-in">
-              <Button variant="ghost" size="sm">Login</Button>
+              <Button variant="ghost" size="sm">Sign In</Button>
             </Link>
           )}
         </div>

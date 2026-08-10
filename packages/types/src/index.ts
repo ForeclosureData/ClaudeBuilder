@@ -388,6 +388,35 @@ export interface PropertyResolutionResult {
   requiresManualReview: boolean;
 }
 
+// ─── Manual review task evidence ───────────────────────────────────────
+
+/**
+ * Structured provenance for one ManualReviewTask, stored in its `evidence`
+ * Json column. Every field is optional -- not every review reason has
+ * every kind of evidence (e.g. POOR_TEXT_QUALITY has a source snippet but
+ * no CAD candidate; CAD_OWNER_CONFLICT has a candidate/score but no source
+ * snippet). Populated only when a task is created going forward; never
+ * reconstructed for pre-existing rows.
+ */
+export interface ManualReviewTaskEvidence {
+  /** The ManualReviewReason this evidence explains, kept alongside the task's own `reason` column for a self-contained record. */
+  reason: string;
+  /** The field name in conflict, e.g. "ownerName", "borrowerNames", "saleDate". */
+  conflictingField?: string;
+  /** What the foreclosure notice itself stated for the conflicting field. */
+  noticeValue?: string | null;
+  /** What the county appraisal district's candidate record stated for the conflicting field. */
+  cadValue?: string | null;
+  /** The appraisal candidate's own source property ID, when a candidate was involved. */
+  candidateId?: string | null;
+  /** The resolver/scoring engine's 0-1 confidence or match score for the candidate/decision behind this task. */
+  score?: number | null;
+  matchedFields?: string[];
+  conflictingFields?: string[];
+  /** A short excerpt of the source notice text relevant to this reason (e.g. the OCR-noise passage, or the resolver's own explanation string). */
+  sourceSnippet?: string | null;
+}
+
 // ─── Property valuation providers ─────────────────────────────────────
 
 export type ValuationType = "zestimate" | "county_appraised_value" | "county_market_value" | "third_party_avm" | "internal_estimate";

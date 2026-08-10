@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 const items = [
   { href: "/", label: "Home", icon: Home },
-  { href: "/properties", label: "Counties", icon: Search },
+  { href: "/county/hidalgo-tx", label: "Browse", icon: Search },
   { href: "/watchlist", label: "Saved", icon: Heart },
   { href: "/settings/billing", label: "Account", icon: User },
 ];

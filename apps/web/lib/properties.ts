@@ -91,6 +91,21 @@ export function buildForeclosureCaseWhere(filters: ForeclosureListFilters): Pris
   if (filters.manualReviewStatus) {
     where.documents = { some: { manualReviewStatus: filters.manualReviewStatus as Prisma.EnumManualReviewStatusFilter["equals"] } };
   }
+  if (filters.subdivisionSearch) {
+    propertyWhere.subdivision = { contains: filters.subdivisionSearch, mode: "insensitive" };
+    where.property = propertyWhere;
+  }
+  if (filters.hasCountyValue) {
+    propertyWhere.appraisedValueCents = { ...(propertyWhere.appraisedValueCents as object), not: null };
+    where.property = propertyWhere;
+  }
+  if (filters.hasStreetAddress) {
+    propertyWhere.propertyStreetAddress = { not: null };
+    where.property = propertyWhere;
+  }
+  if (filters.newlyAddedWithinDays !== undefined) {
+    where.createdAt = { gte: new Date(Date.now() - filters.newlyAddedWithinDays * 24 * 60 * 60 * 1000) };
+  }
 
   return where;
 }
