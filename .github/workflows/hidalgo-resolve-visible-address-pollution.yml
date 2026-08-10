@@ -1,0 +1,49 @@
+name: Hidalgo Resolve Visible-Listing Address Pollution
+
+# Phase 2 execution: corrects the trustee/courthouse/lender address
+# pollution found among currently investor-visible listings by
+# ci-audit-visible-address-pollution.mts. Defaults to dry_run=true (zero
+# writes). See apps/web/scripts/ci-resolve-visible-address-pollution.mts.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = zero writes, print the plan only. false = execute the corrections."
+        required: false
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run visible-listing address correction
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: pnpm --filter @foreclosuredata/web run resolve:visible-address-pollution:ci

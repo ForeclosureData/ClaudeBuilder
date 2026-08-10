@@ -20,6 +20,8 @@
     "report:blocked-55-outcome:ci": "tsx scripts/ci-report-blocked-55-outcome.mts",
     "deepdump:blocked-52:ci": "tsx scripts/ci-deepdump-blocked-52.mts",
     "audit:visible-address-pollution:ci": "tsx scripts/ci-audit-visible-address-pollution.mts",
+    "resolve:visible-address-pollution:ci": "tsx scripts/ci-resolve-visible-address-pollution.mts",
+    "resolve:blocked-52-human-review:ci": "tsx scripts/ci-resolve-blocked-52-human-review.mts",
     "report:publication-status:ci": "tsx scripts/ci-report-publication-status.mts",
     "triage:review-backlog:ci": "tsx scripts/ci-triage-review-backlog.mts",
     "reconcile:inventory-vs-backlog:ci": "tsx scripts/ci-reconcile-inventory-vs-backlog.mts",
